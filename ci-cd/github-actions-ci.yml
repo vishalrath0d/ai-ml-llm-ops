@@ -1,0 +1,152 @@
+name: AI Services CI (with Eval Gate)
+
+# NOTE ON WHERE THIS FILE LIVES
+# ------------------------------
+# For GitHub Actions to actually pick this up in a real repo, it needs to
+# live at `.github/workflows/ci.yml` (or any filename under
+# `.github/workflows/`). It lives here instead, at
+# `ci-cd/github-actions-ci.yml`, purely so it's easy to find and read as
+# part of this teaching project. To "activate" it: copy/move it to
+# `.github/workflows/ci.yml` at the repo root.
+#
+# WHAT THIS DEMONSTRATES
+# -----------------------
+# This is what a common GitHub Actions gate (lint + type-check + pytest +
+# a coverage floor) looks like once you extend the same "must pass to
+# merge" idea to cover the thing that's actually AI-specific: an
+# eval-score regression gate. See ci-cd/README.md for the full gap
+# writeup.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  # In CI, point llm-gateway at a local/offline provider so every PR run
+  # is free and doesn't depend on a hosted API key being present in CI
+  # secrets. Set LLM_PROVIDER=ollama (with an `ollama` service container
+  # pulling a small model) for a real free/offline run, or set it to a
+  # "mock" provider mode in llm-gateway that returns canned completions
+  # if you'd rather not run a model in CI at all. Never point CI at a
+  # paid hosted provider by default - that cost scales with PR volume.
+  LLM_PROVIDER: ollama
+  EVAL_PASS_RATE_THRESHOLD: "0.8"
+
+jobs:
+  build-test-and-eval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Start services via docker compose
+        # docker-compose.yml lives one level up from ci-cd/, at the repo
+        # root, owned by the integration step that wires all the
+        # individual service compose fragments together.
+        run: |
+          docker compose -f ../docker-compose.yml up -d \
+            postgres llm-gateway rag-service agent-service eval-service
+
+      - name: Wait for health checks
+        run: |
+          set -e
+          for svc in "llm-gateway:8001" "rag-service:8002" "agent-service:8003" "eval-service:8004"; do
+            name="${svc%%:*}"
+            port="${svc##*:}"
+            echo "Waiting for ${name} on :${port}/health ..."
+            ok=""
+            for i in $(seq 1 30); do
+              if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+                echo "${name} is healthy"
+                ok=1
+                break
+              fi
+              sleep 2
+            done
+            if [ -z "${ok}" ]; then
+              echo "::error::${name} never became healthy after 60s"
+              docker compose -f ../docker-compose.yml logs "${name}"
+              exit 1
+            fi
+          done
+
+      - name: Run unit tests - llm-gateway
+        run: docker compose -f ../docker-compose.yml exec -T llm-gateway pytest -q
+
+      - name: Run unit tests - rag-service
+        run: docker compose -f ../docker-compose.yml exec -T rag-service pytest -q
+
+      - name: Run unit tests - agent-service
+        run: docker compose -f ../docker-compose.yml exec -T agent-service pytest -q
+
+      - name: Run unit tests - eval-service
+        run: docker compose -f ../docker-compose.yml exec -T eval-service pytest -q
+
+      # ======================================================================
+      # ### THIS EVAL GATE IS THE PART A NORMAL LINT+TEST+COVERAGE PIPELINE
+      # ### DOESN'T HAVE.
+      #
+      # In a lot of production AI systems, evals are triggered manually/
+      # on-demand and are completely decoupled from the deploy pipeline
+      # (see docs/concepts/03-reliability-debugging-ops.md, section 7). A
+      # prompt or model-config change can go from commit to production
+      # without anything automatically checking whether it regressed
+      # answer quality. Everything from here down is the retrofit: run the
+      # eval suite, read back the pass rate, and fail the build - the exact
+      # same "must pass to merge" shape as a unit-test gate, just pointed at
+      # an eval score instead of pytest's exit code.
+      # ======================================================================
+      - name: Trigger eval-service scenario run
+        run: |
+          curl -sf -X POST http://localhost:8004/scenarios/run-all -o run_result.json
+          echo "--- scenario run result ---"
+          cat run_result.json
+
+      - name: Parse eval_pass_rate and enforce the eval gate
+        run: |
+          curl -sf http://localhost:8004/metrics -o metrics.txt
+          python3 - <<'PY'
+          import sys
+
+          threshold = float("${{ env.EVAL_PASS_RATE_THRESHOLD }}")
+          pass_rate = None
+
+          with open("metrics.txt") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  # Prometheus exposition format looks like either:
+                  #   eval_pass_rate 0.83
+                  #   eval_pass_rate{scenario_set="all"} 0.83
+                  if line.split("{")[0].split(" ")[0] == "eval_pass_rate":
+                      pass_rate = float(line.rsplit(" ", 1)[-1])
+                      break
+
+          if pass_rate is None:
+              print("::error::eval_pass_rate metric not found in /metrics output")
+              sys.exit(1)
+
+          print(f"eval_pass_rate = {pass_rate:.4f}  (threshold = {threshold:.4f})")
+
+          if pass_rate < threshold:
+              print(
+                  f"::error::EVAL GATE FAILED - eval_pass_rate {pass_rate:.4f} "
+                  f"is below the required threshold of {threshold:.4f}. "
+                  "Blocking this build the same way a failing pytest run would."
+              )
+              sys.exit(1)
+
+          print("Eval gate passed - eval_pass_rate is at or above threshold.")
+          PY
+
+      - name: Tear down services
+        if: always()
+        run: docker compose -f ../docker-compose.yml down -v

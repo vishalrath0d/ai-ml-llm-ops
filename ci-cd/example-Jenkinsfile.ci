@@ -1,0 +1,145 @@
+// example-Jenkinsfile.ci -- the TEST / EVAL-GATE half of CI/CD for Jenkins.
+// example-Jenkinsfile.deploy (this same folder) is the deployment half --
+// same split as .github/workflows/{ci,deploy}.yml for GitHub Actions, and
+// deliberately kept close to that file's structure so the two are easy to
+// compare side by side.
+//
+// Unlike .github/workflows/ci.yml, this needs a real Jenkins agent with
+// Docker + Python available, and (same as the .deploy sibling) a real
+// `shared-ci-library` for anything beyond what's inlined directly below --
+// this file only uses plain `sh` steps, no shared-library calls, so it
+// runs on any Jenkins agent with Docker installed, no shared library
+// required at all.
+
+pipeline {
+    agent { label 'docker' }
+
+    environment {
+        LLM_PROVIDER_CHAIN     = 'ollama'
+        EVAL_PASS_RATE_THRESHOLD = '0.8'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Unit tests (matrix)') {
+            // Jenkins' declarative `matrix` block is the direct equivalent
+            // of GitHub Actions' `strategy: matrix:` in ci.yml -- same
+            // idea, same four services, run in parallel by default.
+            matrix {
+                axes {
+                    axis {
+                        name 'SERVICE'
+                        values 'llm-gateway', 'agent-service', 'rag-service', 'eval-service'
+                    }
+                }
+                stages {
+                    stage('Install deps and run pytest') {
+                        steps {
+                            dir("services/${SERVICE}") {
+                                sh """
+                                    python3 -m venv .venv
+                                    .venv/bin/pip install -q --upgrade pip
+                                    .venv/bin/pip install -q -r requirements.txt pytest pytest-asyncio
+                                    .venv/bin/python -m pytest tests/ -q
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Start services via docker compose') {
+            steps {
+                sh 'docker compose up -d postgres llm-gateway rag-service agent-service eval-service'
+            }
+        }
+
+        stage('Wait for health checks') {
+            steps {
+                sh '''
+                    set -e
+                    for svc in "llm-gateway:8001" "rag-service:8002" "agent-service:8003" "eval-service:8004"; do
+                        name="${svc%%:*}"
+                        port="${svc##*:}"
+                        echo "Waiting for ${name} on :${port}/health ..."
+                        ok=""
+                        for i in $(seq 1 30); do
+                            if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+                                ok=1
+                                break
+                            fi
+                            sleep 2
+                        done
+                        if [ -z "$ok" ]; then
+                            echo "${name} never became healthy after 60s"
+                            docker compose logs "${name}"
+                            exit 1
+                        fi
+                    done
+                '''
+            }
+        }
+
+        // ====================================================================
+        // === EVAL GATE -- same logic and same threshold as
+        // === .github/workflows/ci.yml, against a local docker-compose
+        // === stack rather than a real staging deployment (that's what
+        // === example-Jenkinsfile.deploy's own Eval Gate stage is for).
+        // ====================================================================
+        stage('Trigger eval-service scenario run') {
+            steps {
+                sh '''
+                    curl -sf -X POST http://localhost:8004/scenarios/run-all -o run_result.json
+                    cat run_result.json
+                '''
+            }
+        }
+
+        stage('Parse eval_pass_rate and enforce the eval gate') {
+            steps {
+                script {
+                    sh 'curl -sf http://localhost:8004/metrics -o metrics.txt'
+                    def passRate = sh(
+                        script: '''
+                            python3 - <<'PY'
+import sys
+with open("metrics.txt") as f:
+    rate = None
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.split("{")[0].split(" ")[0] == "eval_pass_rate":
+            rate = line.rsplit(" ", 1)[-1]
+            break
+if rate is None:
+    print("ERROR: eval_pass_rate not found in metrics", file=sys.stderr)
+    sys.exit(1)
+print(rate)
+PY
+                        ''',
+                        returnStdout: true
+                    ).trim().toDouble()
+
+                    echo "eval_pass_rate = ${passRate} (threshold = ${env.EVAL_PASS_RATE_THRESHOLD})"
+                    if (passRate < env.EVAL_PASS_RATE_THRESHOLD.toDouble()) {
+                        error("EVAL GATE FAILED - eval_pass_rate ${passRate} is below threshold ${env.EVAL_PASS_RATE_THRESHOLD}.")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker compose down -v'
+        }
+    }
+}

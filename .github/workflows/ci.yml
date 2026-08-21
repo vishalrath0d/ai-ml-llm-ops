@@ -1,0 +1,162 @@
+name: AI Services CI (with Eval Gate)
+
+# Activated from ci-cd/github-actions-ci.yml -- see that file's history for
+# the original teaching-only version and ci-cd/README.md for the full gap
+# writeup this demonstrates (extending a normal lint+test+coverage gate
+# with an AI-specific eval-score regression gate).
+#
+# One real bug found and fixed while actually activating this (i.e. this
+# is not just a copy-paste of the ci-cd/ version):
+#
+# `docker compose exec <service> pytest` cannot work here, and would fail
+# the moment this ran for real: each service's runtime image is a
+# deliberately minimal multi-stage build containing only `app/`, not
+# `tests/` or pytest itself (confirmed directly: `docker exec llm-gateway
+# which pytest` finds nothing) -- that's correct image hygiene, not a bug
+# to route around by installing test deps into a prod image. Unit tests
+# instead run in the runner's own Python env, exactly the way they were
+# run and verified locally while building this stack.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  # In CI, point llm-gateway at the free/offline provider only -- every PR
+  # run must be free and must not depend on a hosted API key being present
+  # in CI secrets. Never point CI at a paid hosted provider by default;
+  # that cost scales with PR volume. Gemini/OpenAI/Anthropic all being
+  # absent here is what makes the chain fall through to ollama regardless
+  # of LLM_PROVIDER_CHAIN's configured order -- see services/llm-gateway/
+  # app/main.py's fail-fast-and-fall-through provider loop.
+  LLM_PROVIDER_CHAIN: ollama
+  EVAL_PASS_RATE_THRESHOLD: "0.8"
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [llm-gateway, agent-service, rag-service, eval-service]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps and run pytest
+        working-directory: services/${{ matrix.service }}
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt pytest pytest-asyncio
+          .venv/bin/python -m pytest tests/ -q
+
+  build-and-eval-gate:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start services via docker compose
+        # `docker compose up <services>` also brings up everything those
+        # services list in `depends_on`, transitively -- ollama (via
+        # llm-gateway), and mlflow + feature-store (via agent-service) all
+        # come up too even though they're not named explicitly here. Both
+        # of the latter two are soft dependencies either way:
+        # agent-service's model_registry.py and feature_store_client.py
+        # both degrade gracefully (unknown urgency / default features)
+        # rather than failing if either is ever unreachable.
+        run: |
+          docker compose up -d postgres llm-gateway rag-service agent-service eval-service
+
+      - name: Wait for health checks
+        run: |
+          set -e
+          for svc in "llm-gateway:8001" "rag-service:8002" "agent-service:8003" "eval-service:8004"; do
+            name="${svc%%:*}"
+            port="${svc##*:}"
+            echo "Waiting for ${name} on :${port}/health ..."
+            ok=""
+            for i in $(seq 1 30); do
+              if curl -sf "http://localhost:${port}/health" >/dev/null 2>&1; then
+                echo "${name} is healthy"
+                ok=1
+                break
+              fi
+              sleep 2
+            done
+            if [ -z "${ok}" ]; then
+              echo "::error::${name} never became healthy after 60s"
+              docker compose logs "${name}"
+              exit 1
+            fi
+          done
+
+      # ======================================================================
+      # ### THIS EVAL GATE IS THE PART A NORMAL LINT+TEST+COVERAGE PIPELINE
+      # ### DOESN'T HAVE.
+      #
+      # In a lot of production AI systems, evals are triggered manually/
+      # on-demand and are completely decoupled from the deploy pipeline (see
+      # docs/concepts/03-reliability-debugging-ops.md, section 7). A prompt
+      # or model-config change can go from commit to production without
+      # anything automatically checking whether it regressed answer
+      # quality. Everything from here down is the retrofit: run the eval
+      # suite, read back the pass rate, and fail the build - the exact same
+      # "must pass to merge" shape as a unit-test gate, just pointed at an
+      # eval score instead of pytest's exit code.
+      # ======================================================================
+      - name: Trigger eval-service scenario run
+        run: |
+          curl -sf -X POST http://localhost:8004/scenarios/run-all -o run_result.json
+          echo "--- scenario run result ---"
+          cat run_result.json
+
+      - name: Parse eval_pass_rate and enforce the eval gate
+        run: |
+          curl -sf http://localhost:8004/metrics -o metrics.txt
+          python3 - <<'PY'
+          import sys
+
+          threshold = float("${{ env.EVAL_PASS_RATE_THRESHOLD }}")
+          pass_rate = None
+
+          with open("metrics.txt") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  # Prometheus exposition format looks like either:
+                  #   eval_pass_rate 0.83
+                  #   eval_pass_rate{scenario_set="all"} 0.83
+                  if line.split("{")[0].split(" ")[0] == "eval_pass_rate":
+                      pass_rate = float(line.rsplit(" ", 1)[-1])
+                      break
+
+          if pass_rate is None:
+              print("::error::eval_pass_rate metric not found in /metrics output")
+              sys.exit(1)
+
+          print(f"eval_pass_rate = {pass_rate:.4f}  (threshold = {threshold:.4f})")
+
+          if pass_rate < threshold:
+              print(
+                  f"::error::EVAL GATE FAILED - eval_pass_rate {pass_rate:.4f} "
+                  f"is below the required threshold of {threshold:.4f}. "
+                  "Blocking this build the same way a failing pytest run would."
+              )
+              sys.exit(1)
+
+          print("Eval gate passed - eval_pass_rate is at or above threshold.")
+          PY
+
+      - name: Tear down services
+        if: always()
+        run: docker compose down -v

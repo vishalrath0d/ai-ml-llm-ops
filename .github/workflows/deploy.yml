@@ -1,0 +1,152 @@
+name: Deploy (build, push, staged rollout with an eval gate)
+
+# The deployment half of CI/CD -- ci.yml (in this same folder) is the
+# test/eval-gate half. This workflow shows the SHAPE of a real staged
+# rollout: build & push images, deploy to staging, re-run the eval gate
+# against the actual staging deployment (not a local docker-compose stack),
+# require a human approval, then deploy to production.
+#
+# Two honest limitations, on purpose, not oversights:
+# 1. The build-and-push job works out of the box on any GitHub repo --
+#    it pushes to GitHub Container Registry using the repo's own built-in
+#    GITHUB_TOKEN, no extra secrets needed. Everything past that point
+#    (deploy-staging, deploy-production) is a placeholder: it needs real
+#    infrastructure (ECS/Kubernetes/whatever you actually deploy to) and
+#    real secrets this repo doesn't have, so those steps print what they
+#    WOULD do and exit successfully rather than actually deploying
+#    anywhere. Swap the placeholder `run:` blocks for real deploy commands
+#    once you point this at real infra -- the stage structure around them
+#    (build -> staging -> eval gate -> approval -> production) is the part
+#    meant to be reused as-is.
+# 2. The manual approval gate is modeled with GitHub's own Environments
+#    feature (`environment: production` below) rather than a custom step --
+#    add a required-reviewers protection rule to a "production" environment
+#    in this repo's Settings -> Environments, and this workflow will
+#    actually pause and wait for a human to click approve before the
+#    deploy-production job runs. Without that rule configured, the
+#    environment gate is a no-op.
+
+on:
+  push:
+    tags:
+      - "release-*"
+  workflow_dispatch:
+    inputs:
+      target_region:
+        description: "Production region to deploy to (used at the final approval step)"
+        required: false
+        default: "us"
+        type: choice
+        options: [us, eu, aus]
+
+env:
+  REGISTRY: ghcr.io
+  EVAL_PASS_RATE_THRESHOLD: "0.8"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [llm-gateway, agent-service, rag-service, eval-service, feature-store, web-ui]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: staging
+    steps:
+      - name: Deploy images to staging
+        # Placeholder -- replace with your real deploy command (aws ecs
+        # update-service, kubectl apply, terraform apply, etc.), reading
+        # whatever secrets your infra needs from this job's `staging`
+        # environment (Settings -> Environments -> staging -> secrets).
+        run: |
+          echo "Would deploy image tag ${{ github.sha }} to staging here."
+          echo "Real implementation: aws ecs update-service / kubectl apply / terraform apply."
+
+  eval-gate-on-staging:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: staging
+    steps:
+      - name: Trigger eval-service scenario run against staging
+        # Same eval-gate logic as ci.yml, but pointed at the just-deployed
+        # staging URL instead of a local docker-compose stack -- this is
+        # the "does what we just deployed still pass its quality bar"
+        # check, one stage before anything reaches production.
+        run: |
+          if [ -z "${{ secrets.STAGING_EVAL_SERVICE_URL }}" ]; then
+            echo "::warning::STAGING_EVAL_SERVICE_URL secret not set -- skipping the real call (expected on a repo with no real staging environment yet)."
+            exit 0
+          fi
+          curl -sf -X POST "${{ secrets.STAGING_EVAL_SERVICE_URL }}/scenarios/run-all" -o run_result.json
+          cat run_result.json
+
+      - name: Parse eval_pass_rate and enforce the eval gate
+        run: |
+          if [ -z "${{ secrets.STAGING_EVAL_SERVICE_URL }}" ]; then
+            echo "Skipping gate enforcement -- no staging eval service configured."
+            exit 0
+          fi
+          curl -sf "${{ secrets.STAGING_EVAL_SERVICE_URL }}/metrics" -o metrics.txt
+          python3 - <<'PY'
+          import sys
+
+          threshold = float("${{ env.EVAL_PASS_RATE_THRESHOLD }}")
+          pass_rate = None
+          with open("metrics.txt") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  if line.split("{")[0].split(" ")[0] == "eval_pass_rate":
+                      pass_rate = float(line.rsplit(" ", 1)[-1])
+                      break
+
+          if pass_rate is None:
+              print("::error::eval_pass_rate metric not found")
+              sys.exit(1)
+          print(f"eval_pass_rate = {pass_rate:.4f} (threshold = {threshold:.4f})")
+          if pass_rate < threshold:
+              print(f"::error::EVAL GATE FAILED on staging - {pass_rate:.4f} < {threshold:.4f}. Blocking production deploy.")
+              sys.exit(1)
+          print("Eval gate passed on staging.")
+          PY
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: eval-gate-on-staging
+    # This environment is where the actual human approval lives: add a
+    # required-reviewers protection rule to a "production" environment in
+    # this repo's Settings, and GitHub pauses this job until someone
+    # approves it -- the exact same shape as the Jenkinsfile's manual
+    # `input` step, just modeled with GitHub's own primitive instead of a
+    # custom one.
+    environment: production
+    steps:
+      - name: Deploy images to production
+        run: |
+          region="${{ github.event.inputs.target_region }}"
+          region="${region:-us}"
+          echo "Would deploy image tag ${{ github.sha }} to production region '${region}' here."
+          echo "Real implementation: aws ecs update-service / kubectl apply / terraform apply, scoped to that region's cluster."

@@ -1,0 +1,205 @@
+// example-Jenkinsfile.deploy -- the DEPLOYMENT half of CI/CD for Jenkins.
+// example-Jenkinsfile.ci (this same folder) is the test/eval-gate half --
+// same split as .github/workflows/{ci,deploy}.yml for GitHub Actions.
+//
+// Modeled on a common production Jenkins pattern (build/tag Docker image
+// -> registry push -> register a deploy task -> deploy, shared-library
+// style, branch-gated lower environments, tag-gated + manual-input-gated
+// prod). See docs/concepts/03-reliability-debugging-ops.md (section 7)
+// for the pattern this is grounded in - specifically that it's common for
+// an evals service's own Jenkinsfile (the pipeline for the service whose
+// entire job is running evals) to be a *pure deploy pipeline* with zero
+// eval-execution stage in CI.
+//
+// The one thing added here beyond a normal deploy pipeline is the
+// "Eval Gate" stage below, clearly marked. Everything else mirrors a
+// typical existing pipeline shape on purpose - the point of this file is
+// to show how you'd retrofit the gate into a pipeline style that's
+// already running, not to redesign the pipeline from scratch.
+//
+// Like .github/workflows/deploy.yml, this will fail past the build/push
+// stages without real registry credentials and a real Jenkins shared
+// library (`shared-ci-library`) providing `sharedEcrLogin`/`sharedEcsDeploy`
+// -- that's intentional. The stage SHAPE (build -> integration -> qa ->
+// staging -> eval gate -> manual prod approval -> production) is what's
+// meant to be reused; the shared-library calls are placeholders for
+// whatever your org's actual deploy tooling is.
+
+@Library('shared-ci-library@api') _
+
+pipeline {
+    agent { label 'docker' }
+
+    parameters {
+        choice(
+            name: 'PROD_REGION',
+            choices: ['prod-us', 'prod-eu', 'prod-aus'],
+            description: 'Only consulted at the manual prod approval step below.'
+        )
+    }
+
+    environment {
+        SERVICE_NAME   = 'eval-service'
+        ECR_REPO       = "${env.ECR_REGISTRY}/ai-ops/${SERVICE_NAME}"
+        IMAGE_TAG      = "${env.GIT_COMMIT.take(8)}"
+        ECS_CLUSTER    = 'api-cluster-ecs-1'
+        EVAL_THRESHOLD = '0.8'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build & Tag Docker Image') {
+            steps {
+                sh """
+                    docker build -t ${ECR_REPO}:${IMAGE_TAG} \
+                                 -t ${ECR_REPO}:latest .
+                """
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sharedEcrLogin()   // shared-library helper: aws ecr get-login + docker login
+                sh """
+                    docker push ${ECR_REPO}:${IMAGE_TAG}
+                    docker push ${ECR_REPO}:latest
+                """
+            }
+        }
+
+        stage('Deploy to Integration') {
+            when { branch 'develop' }
+            steps {
+                sharedEcsDeploy(
+                    cluster: "${ECS_CLUSTER}",
+                    service: "${SERVICE_NAME}-integration",
+                    image:   "${ECR_REPO}:${IMAGE_TAG}"
+                )
+            }
+        }
+
+        stage('Deploy to QA') {
+            when { branch 'qa' }
+            steps {
+                sharedEcsDeploy(
+                    cluster: "${ECS_CLUSTER}",
+                    service: "${SERVICE_NAME}-qa",
+                    image:   "${ECR_REPO}:${IMAGE_TAG}"
+                )
+            }
+        }
+
+        stage('Deploy to Staging') {
+            when { tag "release-*" }
+            steps {
+                sharedEcsDeploy(
+                    cluster: "${ECS_CLUSTER}",
+                    service: "${SERVICE_NAME}-staging",
+                    image:   "${ECR_REPO}:${IMAGE_TAG}"
+                )
+            }
+        }
+
+        // ====================================================================
+        // === EVAL GATE - NEW STAGE, NOT PART OF A TYPICAL DEPLOY PIPELINE. ==
+        //
+        // Inserted here, after staging deploy and before the prod approval /
+        // deploy stages, on purpose: staging is where you have a live
+        // eval-service endpoint to call without touching production traffic.
+        // This calls eval-service the exact same way the GitHub Actions
+        // example in this same ci-cd/ folder does (POST /scenarios/run-all,
+        // then GET /metrics, then compare eval_pass_rate against a
+        // threshold) and fails the build - which blocks every stage below
+        // it, including the prod manual-input step - on a quality
+        // regression. This is the retrofit: the same eval logic that often
+        // only exists for offline/manual use, wired into the path a change
+        // actually takes to reach prod, the same way a coverage-floor gate
+        // is wired into a regular code pipeline.
+        // ====================================================================
+        stage('Eval Gate') {
+            when { tag "release-*" }
+            steps {
+                script {
+                    sh """
+                        curl -sf -X POST https://eval-service.staging.internal/scenarios/run-all -o run_result.json
+                        cat run_result.json
+                        curl -sf https://eval-service.staging.internal/metrics -o metrics.txt
+                    """
+
+                    def passRate = sh(
+                        script: '''
+                            python3 - <<'PY'
+import sys
+with open("metrics.txt") as f:
+    rate = None
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.split("{")[0].split(" ")[0] == "eval_pass_rate":
+            rate = line.rsplit(" ", 1)[-1]
+            break
+if rate is None:
+    print("ERROR: eval_pass_rate not found in metrics", file=sys.stderr)
+    sys.exit(1)
+print(rate)
+PY
+                        ''',
+                        returnStdout: true
+                    ).trim().toDouble()
+
+                    echo "eval_pass_rate = ${passRate} (threshold = ${env.EVAL_THRESHOLD})"
+
+                    if (passRate < env.EVAL_THRESHOLD.toDouble()) {
+                        error("EVAL GATE FAILED - eval_pass_rate ${passRate} is below threshold ${env.EVAL_THRESHOLD}. " +
+                              "Blocking prod deploy the same way a failed integration test would. " +
+                              "This is the check a lot of real-world AI pipelines are currently missing entirely.")
+                    }
+                }
+            }
+        }
+
+        stage('Approve Production Region') {
+            when { tag "release-*" }
+            steps {
+                // A common baseline release-safety control: a manual human
+                // choice of which prod region to ship to. Kept as-is here -
+                // the Eval Gate above supplements this, it doesn't replace it.
+                input message: "Deploy ${IMAGE_TAG} to production?",
+                      ok: 'Deploy',
+                      parameters: [
+                          choice(name: 'PROD_REGION', choices: ['prod-us', 'prod-eu', 'prod-aus'],
+                                 description: 'Target production region for this release')
+                      ]
+            }
+        }
+
+        stage('Deploy to Production') {
+            when { tag "release-*" }
+            steps {
+                sharedEcsDeploy(
+                    cluster: "${ECS_CLUSTER}",
+                    service: "${SERVICE_NAME}-${params.PROD_REGION}",
+                    image:   "${ECR_REPO}:${IMAGE_TAG}"
+                )
+            }
+        }
+    }
+
+    post {
+        failure {
+            slackSend(channel: '#ai-ops-deploys',
+                      message: "FAILED: ${SERVICE_NAME} pipeline #${env.BUILD_NUMBER} on ${env.BRANCH_NAME} - ${env.BUILD_URL}")
+        }
+        success {
+            slackSend(channel: '#ai-ops-deploys',
+                      message: "OK: ${SERVICE_NAME} pipeline #${env.BUILD_NUMBER} on ${env.BRANCH_NAME}")
+        }
+    }
+}
