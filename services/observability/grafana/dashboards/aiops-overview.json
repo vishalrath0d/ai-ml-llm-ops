@@ -1,0 +1,494 @@
+{
+  "id": null,
+  "uid": "aiops-overview",
+  "title": "AI Ops Overview",
+  "description": "Request rate, error rate, latency (P50/P95), and eval quality metrics across llm-gateway, rag-service, agent-service, and eval-service. Each service defines its own metric names/namespace (no shared http_requests_total convention across services), so panels use one query per service rather than a single grouped-by-service query. See README.md for the exact metric names this was built against.",
+  "tags": [
+    "aiops",
+    "prometheus"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Traffic",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Request Rate by Service (req/s)",
+      "description": "One query per service, since each service names its own request counter: llm_gateway_requests_total, rag_query_total, agent_service_chat_requests_total, eval_runs_total.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(llm_gateway_requests_total[5m]))",
+          "legendFormat": "llm-gateway"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(rag_query_total[5m]))",
+          "legendFormat": "rag-service (queries)"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(agent_service_chat_requests_total[5m]))",
+          "legendFormat": "agent-service (chat)"
+        },
+        {
+          "refId": "D",
+          "expr": "sum(rate(eval_runs_total[5m]))",
+          "legendFormat": "eval-service (eval runs)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Error Rate by Service (fraction of failed requests)",
+      "description": "llm-gateway: status label is success|error|chaos_error, both error states counted. agent-service: status label is ok|error. rag-service is intentionally EXCLUDED -- its rag_query_total counter currently carries no status/outcome label, so an error ratio isn't derivable from it today (a real, concrete instrumentation gap worth fixing). eval-service uses eval_runs_total{result=\"fail\"} as its 'error' proxy -- a failed eval run isn't a service error, but it's the closest available signal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(llm_gateway_requests_total{status=~\"error|chaos_error\"}[5m])) / sum(rate(llm_gateway_requests_total[5m]))",
+          "legendFormat": "llm-gateway"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(agent_service_chat_requests_total{status=\"error\"}[5m])) / sum(rate(agent_service_chat_requests_total[5m]))",
+          "legendFormat": "agent-service"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(eval_runs_total{result=\"fail\"}[5m])) / sum(rate(eval_runs_total[5m]))",
+          "legendFormat": "eval-service (fail rate)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Latency",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request Latency P50 by Service",
+      "description": "histogram_quantile(0.50, ...) against each service's own latency histogram: llm_gateway_request_latency_seconds, rag_query_latency_seconds, agent_service_chat_latency_seconds, eval_run_latency_seconds.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum(rate(llm_gateway_request_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "llm-gateway"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum(rate(rag_query_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "rag-service"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.50, sum(rate(agent_service_chat_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "agent-service"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.50, sum(rate(eval_run_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "eval-service"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Request Latency P95 by Service",
+      "description": "Same histograms as the P50 panel, 95th percentile instead.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(llm_gateway_request_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "llm-gateway"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum(rate(rag_query_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "rag-service"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.95, sum(rate(agent_service_chat_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "agent-service"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.95, sum(rate(eval_run_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "eval-service"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Eval Quality (eval-service)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "gauge",
+      "title": "Eval Pass Rate",
+      "description": "eval_pass_rate is a gauge labeled by scenario (plus an 'overall' aggregate); this panel shows the overall aggregate, range 0-1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "eval_pass_rate{scenario=\"overall\"}",
+          "legendFormat": "pass rate"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "gauge",
+      "title": "Eval Avg Score",
+      "description": "eval_avg_score is the judge's score_percent averaged across runs, already on a 0-100 scale (not 0-1) -- this panel shows the overall aggregate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "green",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "eval_avg_score{scenario=\"overall\"}",
+          "legendFormat": "avg score"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Service Up",
+      "description": "up{job=~...} -- 1 means Prometheus successfully scraped that service's /metrics on the last attempt. Job names come from prometheus.yml's job_name fields, which match docker-compose service names.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=~\"llm-gateway|rag-service|agent-service|eval-service\"}",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Cost (llm-gateway) -- illustrative rates, see app/metrics.py",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Estimated Cost Rate by Provider ($/min)",
+      "description": "rate(llm_gateway_cost_usd_total[5m]) * 60 -- derived from llm_gateway_tokens_total via the static $/1K-token table in app/metrics.py's COST_PER_1K_TOKENS_USD. Illustrative rates, not real-time provider pricing -- update that table to match your actual contracted rates before trusting this for a real budget decision.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(llm_gateway_cost_usd_total[5m]) * 60",
+          "legendFormat": "{{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Total Estimated Cost (since last restart)",
+      "description": "sum(llm_gateway_cost_usd_total) -- a cumulative counter, so this resets to 0 whenever llm-gateway restarts. Illustrative rates, see the timeseries panel's description.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(llm_gateway_cost_usd_total)",
+          "legendFormat": "total"
+        }
+      ]
+    }
+  ]
+}

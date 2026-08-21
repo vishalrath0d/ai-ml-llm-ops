@@ -1,0 +1,47 @@
+# compose.fragment.yml — Prometheus + Grafana, scraping the 4 app services.
+#
+# This is a FRAGMENT merged into the project's root compose file by the
+# integration step. It assumes the following services exist elsewhere in
+# the merged compose file and are reachable by these exact names on the
+# shared docker network: llm-gateway (8001), rag-service (8002),
+# agent-service (8003), eval-service (8004), each exposing GET /metrics.
+#
+# Grafana is deliberately on host port 3001, NOT 3000 -- 3000 is already
+# used by langfuse-web (see ../langfuse/compose.fragment.yml).
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./services/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3001:3000" # host 3001 -- container still listens on its default 3000 internally
+    environment:
+      # Defaults for a fresh local instance. Grafana will prompt to change
+      # the password on first login regardless; do that in real use.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./services/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./services/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:

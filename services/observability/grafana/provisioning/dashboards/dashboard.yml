@@ -1,0 +1,18 @@
+# Dashboard provider config: tells Grafana to auto-load any dashboard JSON
+# files found in /var/lib/grafana/dashboards (mounted from
+# ../dashboards/*.json in compose.fragment.yml) on startup, and to keep
+# polling for changes.
+
+apiVersion: 1
+
+providers:
+  - name: "aiops-dashboards"
+    orgId: 1
+    folder: "AI Ops"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

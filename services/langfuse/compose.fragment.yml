@@ -1,0 +1,251 @@
+# compose.fragment.yml — Langfuse v3 self-hosted stack (local dev equivalent)
+#
+# This mirrors a common production self-hosted Langfuse deployment
+# architecturally: web + worker + Postgres + ClickHouse + Redis +
+# S3-compatible blob storage (minio locally, real S3 in prod). It is a
+# FRAGMENT — the integration step merges this into the project's root
+# compose file.
+#
+# SOURCE OF TRUTH / UNCERTAINTY NOTE:
+#   This fragment is hand-written against Langfuse's documented self-hosting
+#   docker-compose reference. Langfuse ships an official reference compose
+#   file and this was cross-checked against the langfuse/langfuse GitHub
+#   repo's docker-compose.yml at the time of writing, but Langfuse's exact
+#   env var names, defaults, and image tags DO change between releases.
+#   Before trusting this for anything beyond local experimentation:
+#     -> re-check https://langfuse.com/self-hosting/docker-compose
+#     -> re-check https://github.com/langfuse/langfuse/blob/main/docker-compose.yml
+#   Two known discrepancies as of this writing:
+#     1. The task/spec for this exercise pins `langfuse/langfuse:3` and
+#        `langfuse/langfuse-worker:3` (matching what a typical prod
+#        deployment might run at the time this was written). The CURRENT
+#        upstream reference compose on the langfuse/langfuse main branch
+#        has already moved to `:4` tags. If your own prod is actually on
+#        v4 (or newer) by the time you read this, bump these tags to match
+#        prod exactly -- the whole point of this local stack is to mirror
+#        prod, not to run whatever's newest.
+#     2. Upstream's current reference minio service uses a Chainguard image
+#        (`cgr.dev/chainguard/minio`) with an inline `mkdir -p /data/langfuse`
+#        trick instead of a separate bucket-creation step. This fragment
+#        uses the plain `minio/minio` image (as specified for this exercise)
+#        plus a one-shot `mc` init container to create the bucket instead,
+#        since `minio/minio`'s own entrypoint doesn't support that mkdir
+#        trick. Functionally equivalent, just done the more traditional way.
+#
+# SECRETS WARNING:
+#   Every secret below (NEXTAUTH_SECRET, SALT, ENCRYPTION_KEY, DB/Redis/
+#   MinIO passwords) is a randomly generated PLACEHOLDER meant only for
+#   throwaway local dev. They are committed to this repo in plain text,
+#   which is only acceptable because this stack never talks to the
+#   internet and holds no real data. DO NOT reuse ANY of these values in a
+#   real deployment. Generate real ones with:
+#     openssl rand -base64 32   # NEXTAUTH_SECRET, SALT
+#     openssl rand -hex 32      # ENCRYPTION_KEY (must be exactly 64 hex chars)
+
+services:
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      langfuse-db:
+        condition: service_started
+      langfuse-clickhouse:
+        condition: service_started
+      langfuse-redis:
+        condition: service_started
+      langfuse-minio-init:
+        condition: service_completed_successfully
+    environment:
+      # --- core app config ---
+      DATABASE_URL: postgresql://langfuse:MieZDJ4EybnuwyCZnvJ58Q@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: "7v1JBMsXAwhVnaYLW4uBemeH_sw-_OTaR9cXCHlOA0A" # FAKE - local dev only
+      SALT: "TRinQygfcG69uRNADKv-tlEZHRYwNlQi5IPJEiitl7Q"           # FAKE - local dev only
+      ENCRYPTION_KEY: "6233ac1afd557f6fe6037be9136c2c4214ad1e7173db045e10ddb2769f0a8131" # FAKE, 64 hex chars - local dev only
+      TELEMETRY_ENABLED: "true"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+
+      # --- ClickHouse (analytics store used by Langfuse v3 for traces/observations) ---
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "FlZGLEKkyRiNlyqrLl9tnw" # FAKE - local dev only
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+      # --- Redis (queueing / caching) ---
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "EDSXl037U-MWUqXeT-7sRQ" # FAKE - local dev only
+      REDIS_TLS_ENABLED: "false"
+
+      # --- S3-compatible blob storage (minio locally, real S3/GCS in prod) ---
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only
+      # Note: media URLs served back to a browser need the *externally*
+      # reachable minio endpoint, not the internal docker hostname.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    ports:
+      - "3030:3030"
+    depends_on:
+      langfuse-db:
+        condition: service_started
+      langfuse-clickhouse:
+        condition: service_started
+      langfuse-redis:
+        condition: service_started
+      langfuse-minio-init:
+        condition: service_completed_successfully
+    environment:
+      # Worker needs the same core + ClickHouse + Redis + S3 env as web,
+      # since it's the process that actually ingests events into ClickHouse
+      # and writes to blob storage. NEXTAUTH_SECRET is not required here
+      # (the worker has no web/auth surface).
+      DATABASE_URL: postgresql://langfuse:MieZDJ4EybnuwyCZnvJ58Q@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: "TRinQygfcG69uRNADKv-tlEZHRYwNlQi5IPJEiitl7Q"           # FAKE - local dev only
+      ENCRYPTION_KEY: "6233ac1afd557f6fe6037be9136c2c4214ad1e7173db045e10ddb2769f0a8131" # FAKE - local dev only
+      TELEMETRY_ENABLED: "true"
+
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "FlZGLEKkyRiNlyqrLl9tnw" # FAKE - local dev only
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "EDSXl037U-MWUqXeT-7sRQ" # FAKE - local dev only
+      REDIS_TLS_ENABLED: "false"
+
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+
+  # Dedicated Postgres instance for Langfuse only. Deliberately NOT the same
+  # `postgres` service used by mlflow/eval-service -- Langfuse owns its own
+  # schema/migrations and this keeps blast radius contained (a bad Langfuse
+  # migration can't touch anyone else's data, and vice versa).
+  langfuse-db:
+    image: postgres:16
+    container_name: langfuse-db
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: "MieZDJ4EybnuwyCZnvJ58Q" # FAKE - local dev only
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ClickHouse: columnar store Langfuse v3 uses for traces/observations/scores
+  # (this is the biggest architectural difference from Langfuse v2, which
+  # was Postgres-only).
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: langfuse-clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "FlZGLEKkyRiNlyqrLl9tnw" # FAKE - local dev only, must match web/worker above
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "-", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    command: ["redis-server", "--requirepass", "EDSXl037U-MWUqXeT-7sRQ"] # FAKE, must match REDIS_AUTH above
+    ports:
+      - "6380:6379" # host 6380 to avoid clashing with any other local redis on 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "EDSXl037U-MWUqXeT-7sRQ", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # S3-compatible object storage for Langfuse media/event blobs.
+  langfuse-minio:
+    image: minio/minio
+    container_name: langfuse-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only, must match *_SECRET_ACCESS_KEY above
+    ports:
+      - "9090:9000" # S3 API
+      - "9091:9001" # web console
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot init container: waits for minio, then creates the `langfuse`
+  # bucket using minio's own `mc` client, then exits. This is the pattern
+  # Langfuse's own older self-hosting docs used before some reference
+  # composes switched to the mkdir trick on the Chainguard minio image (see
+  # note at top of file). Runs once per `docker compose up`; safe to re-run
+  # (mc mb is idempotent given --ignore-existing).
+  langfuse-minio-init:
+    image: minio/mc
+    container_name: langfuse-minio-init
+    depends_on:
+      langfuse-minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set localminio http://langfuse-minio:9000 minio sPSzqRzqorODt4IoKZnKcw &&
+      mc mb --ignore-existing localminio/langfuse
+      "
+    restart: "no"
+
+volumes:
+  langfuse_db_data:
+  langfuse_clickhouse_data:
+  langfuse_minio_data:

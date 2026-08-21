@@ -1,0 +1,46 @@
+# prometheus.yml — scrape config for the four app services in this project.
+#
+# Targets use docker-compose SERVICE NAMES (not localhost), because
+# Prometheus itself runs inside the same compose network as the services
+# it's scraping. If you run Prometheus outside docker-compose for some
+# reason, replace these with `localhost:<port>` instead.
+#
+# All four services are expected to expose Prometheus-format metrics at
+# GET /metrics on the ports below (per the shared instrumentation
+# convention used across this project).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "llm-gateway"
+    static_configs:
+      - targets: ["llm-gateway:8001"]
+        labels:
+          service: "llm-gateway"
+
+  - job_name: "rag-service"
+    static_configs:
+      - targets: ["rag-service:8002"]
+        labels:
+          service: "rag-service"
+
+  - job_name: "agent-service"
+    static_configs:
+      - targets: ["agent-service:8003"]
+        labels:
+          service: "agent-service"
+
+  - job_name: "eval-service"
+    static_configs:
+      - targets: ["eval-service:8004"]
+        labels:
+          service: "eval-service"
+
+  # Prometheus scraping itself is optional but standard practice, useful
+  # for confirming the scraper is alive and to sanity-check scrape
+  # durations/failures against its own /metrics.
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
