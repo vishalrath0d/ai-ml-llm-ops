@@ -81,7 +81,7 @@ moment this profile is up, with nothing to click through.
 
 1. It's part of the default stack — `docker compose up -d` (from the repo root) starts it along with everything else. (Earlier in this project it briefly lived behind an opt-in `--profile langfuse` flag after some real memory-pressure crashes; re-verified stable since two other services' memory footprints got fixed, and moved back to default — see the root `README.md`'s "Verified" section for that history.)
 2. Send any request through a traced service (`agent-service` or
-   `llm-gateway` — see `../../docs/testing-and-navigation.md`).
+   `llm-gateway` — see `../../docs/operations/testing-and-navigation.md`).
 3. Open **http://localhost:3000**, log in with the auto-created admin
    (`admin@aiops.local` / `localdev12345` — see `docker-compose.yml`'s
    `LANGFUSE_INIT_USER_*` values), and go to your project → **Traces**.

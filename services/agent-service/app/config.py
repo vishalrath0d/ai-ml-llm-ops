@@ -27,7 +27,7 @@ def _env_bool(name: str, default: bool) -> bool:
 # NOT be the same everywhere (CORS openness, whether an API key is
 # required) without needing a different codebase or Dockerfile per
 # environment -- only different env vars. See
-# ../../../docs/environments.md for the full multi-env story.
+# ../../../docs/operations/environments.md for the full multi-env story.
 ENVIRONMENT: str = _env("ENVIRONMENT", "dev").strip().lower()
 
 # Wide open by default ONLY in dev (matches this project's original

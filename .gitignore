@@ -8,8 +8,10 @@
 
 # Internal-only material: real-company recon, pre-sanitization originals,
 # and anything else that must never leave this machine. Nothing in here is
-# deleted, it's just excluded from what gets published/pushed.
-/internal/
+# deleted, it's just excluded from what gets published/pushed. Lives under
+# docs/ (not the repo root) so it sits next to the public docs it was
+# derived from, but the ignore rule is what actually keeps it untracked.
+/docs/internal/
 
 # Python
 __pycache__/

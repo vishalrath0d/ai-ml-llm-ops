@@ -3,7 +3,7 @@
 ## Why this exists
 
 Per the discussion in
-[`concepts/03-reliability-debugging-ops.md`](concepts/03-reliability-debugging-ops.md)
+[`../concepts/03-reliability-debugging-ops.md`](../concepts/03-reliability-debugging-ops.md)
 (section 8, "SRE Practices for AI/Voice Systems"), it's common for an org
 running LLM products to be missing all of the following:
 
@@ -24,14 +24,14 @@ than an abstract one. This doc builds one artifact per item:
 |---|---|
 | No incident runbooks | [Incident runbooks](#incident-runbooks) - two full runbooks: bad/hallucinated agent responses, and voice-latency degradation |
 | No MTTD/MTTR tracking | [MTTD and MTTR tracking](#mttd-and-mttr-tracking) - concrete definitions, a log table template, and a worked example |
-| No blue-green automation | [Blue-green deployment demo](#blue-green-deployment-demo) - [`blue_green_demo.sh`](../sre/blue_green_demo.sh) + [`nginx-bluegreen.conf`](../sre/nginx-bluegreen.conf) - a real, runnable local demo |
+| No blue-green automation | [`../../sre/README.md`](../../sre/README.md) - a real, runnable local demo (`blue_green_demo.sh` + `nginx-bluegreen.conf`) |
 | No chaos-engineering practice | this project's `llm-gateway` chaos toggles - see [Chaos engineering](#chaos-engineering-the-projects-actual-tool-for-this) below |
 
 ## Incident runbooks
 
 Two runbook templates, both closing the same gap called out above:
-**none of the 15 surveyed AI repos have an incident-response runbook of
-any kind.** Deployments today are a straight-line
+**it's common for none of an org's AI repos to have an incident-response
+runbook of any kind.** Deployments today are a straight-line
 integration -> qa -> staging -> prod pipeline gated only by a manual
 "choose the prod region" step - that's the closest thing to a
 release-safety control that exists, and there is nothing at all for "the
@@ -62,7 +62,7 @@ In practice you detect this one of two ways:
 - **A live quality signal fires** - if you've wired `eval_pass_rate` (or
   a groundedness/faithfulness score) into your dashboards as an ongoing
   production SLO (not just a pre-deploy gate - see
-  [`../ci-cd/README.md`](../ci-cd/README.md) for the pre-deploy half of
+  [`../../ci-cd/README.md`](../../ci-cd/README.md) for the pre-deploy half of
   this), a sustained drop below threshold on a rolling sample of live
   traffic is your earliest signal. This project's Grafana dashboard
   should have an `eval_pass_rate` panel for exactly this reason.
@@ -88,7 +88,7 @@ In practice you detect this one of two ways:
    see `services/mlflow/` - or equivalent prompt-versioning indirection),
    *not* a full service redeploy, if your setup supports that separation.
    If it doesn't (a common real-world gap - see
-   `concepts/03-reliability-debugging-ops.md` section 5 on
+   `../concepts/03-reliability-debugging-ops.md` section 5 on
    baselines/rollback), redeploy the prior Docker image tag through the
    normal pipeline.
 4. **If the LLM provider itself seems to be misbehaving** (garbled
@@ -217,7 +217,7 @@ comparable metrics, substitute its dashboard/trace links below.
 4. **If load/concurrency is the driver** (many simultaneous calls,
    approaching the box's known concurrent-call ceiling): this is a
    capacity problem, not a code-regression problem - see
-   [`../load-testing/README.md`](../load-testing/README.md) for how to
+   [`../../load-testing/README.md`](../../load-testing/README.md) for how to
    have already measured where that ceiling is *before* an incident, so
    you recognize this pattern immediately instead of debugging it live.
    Mitigate by shedding load (queue new calls, or fail new-call setup
@@ -227,8 +227,9 @@ comparable metrics, substitute its dashboard/trace links below.
    stateful real-time voice service the way you might for a stateless
    API - an in-flight call is a live phone call holding a WebRTC/SIP
    session for its entire duration; restarting the instance drops every
-   live call on it. See the [Blue-green deployment demo](#blue-green-deployment-demo)
-   section for why draining, not just cutting over, is the correct pattern here.
+   live call on it. See [`../../sre/README.md`](../../sre/README.md)'s
+   "Why this is the easy case" section for why draining, not just cutting
+   over, is the correct pattern here.
 
 #### Diagnostic steps (in this order - each step isolates where in the
 pipeline the added time actually is, don't skip to E2E and guess)
@@ -321,7 +322,7 @@ about rather than treating MTTD as one uniform number:
 
 - **If you have a live quality signal** (an `eval_pass_rate`-style metric
   computed continuously against a rolling sample of live traffic, not
-  just a pre-deploy gate - see [`../ci-cd/README.md`](../ci-cd/README.md)
+  just a pre-deploy gate - see [`../../ci-cd/README.md`](../../ci-cd/README.md)
   for the pre-deploy half), MTTD can be genuinely fast: minutes, bounded
   by your metric's sampling/aggregation window and alert threshold.
 - **If you don't**, MTTD is bounded by how long it takes a human to
@@ -329,7 +330,7 @@ about rather than treating MTTD as one uniform number:
   the exact conversation/trace - this is commonly hours, sometimes days.
   It's a common real-world gap: an org can have good hallucination-
   detection tooling that only runs offline, never on live traffic (see
-  `concepts/03-reliability-debugging-ops.md` section 3).
+  `../concepts/03-reliability-debugging-ops.md` section 3).
 - **A `trace_id`-to-feedback linkage** (the pattern a production
   conversational-AI system already has: a trace ID returned in the API response, reused as input to a
   `/feedback` endpoint) doesn't reduce the *time to notice* directly, but
@@ -373,7 +374,7 @@ this file). One row per incident.
 Reading this row the way you'd want to when triaging a similar future
 incident: MTTD was 32 minutes because there was no live quality signal
 yet at the time (this is exactly the kind of incident an `eval_pass_rate`
-live-traffic SLO - see `../ci-cd/` and section 9 of the reliability doc -
+live-traffic SLO - see `../../ci-cd/` and section 9 of the reliability doc -
 would have caught closer to 13:40 instead of 14:12). MTTR was fast (35
 min) specifically *because* the team reached for a prompt/config
 rollback rather than trying to root-cause the exact stale-chunk ranking
@@ -402,78 +403,12 @@ ingestion/ranking pipeline, not the model or prompt).
   [Incident runbooks](#incident-runbooks) diagnostic steps for how to walk
   a trace).
 
-## Blue-green deployment demo
-
-[`../sre/blue_green_demo.sh`](../sre/blue_green_demo.sh) is fully
-self-contained - it does not depend on the sibling `services/`
-microservices other agents are building. It spins up two copies of a
-tiny dummy HTTP app ([`../sre/bluegreen_demo/app.py`](../sre/bluegreen_demo/app.py),
-stdlib-only, no dependencies to install) on two ports, tagged `v1`/blue
-and `v2`/green, fronts them with nginx using
-[`../sre/nginx-bluegreen.conf`](../sre/nginx-bluegreen.conf), fires a
-continuous stream of requests at the nginx front door, and flips the
-upstream from blue to green **while that traffic is still running** by
-rewriting one line of the nginx config and running `nginx -s reload`. It
-then reports how many of those in-flight requests failed.
-
-Run it:
-
-```bash
-../sre/blue_green_demo.sh
-```
-
-Expected output ends with something like:
-
-```
-Total requests fired while flipping: 80
-Successful (HTTP 200):               80
-Failed/dropped:                      0
-
-PASS: zero dropped requests during the blue -> green flip.
-```
-
-It cleans up everything it started (nginx, both dummy processes, its
-scratch temp dir) on exit, success or failure.
-
-Note: the demo listens on `:8088`, not the more conventional `:8080` -
-`:8080` collides with a locally-running Jenkins instance on the machine
-this was built on; `:8088`/`:9101`/`:9102` were chosen as free ports.
-Change `FRONT_PORT`/`BLUE_PORT`/`GREEN_PORT` at the top of the script if
-any of those collide in your environment.
-
-### Why this is the easy case
-
-`nginx -s reload` works cleanly here because HTTP requests are short-lived
-- each one completes in milliseconds, so "stop routing new requests to the
-old version" and "the old version has no more work to do" happen almost
-instantly. **This is specifically NOT true for a stateful real-time voice
-service.** Per the reliability doc's section 8: for something like
-a production voice-AI backend, an in-flight unit of work is a live phone call over
-WebRTC/SIP that can run for **minutes**, holding open a LiveKit room and
-STT/LLM/TTS provider connections for its entire duration. You cannot just
-stop routing new calls to an old instance and kill it after a short drain
-window the way this demo does - you have to wait out the actual duration
-of every call still in progress on that instance, or you drop live
-customer phone calls mid-conversation.
-
-A correct rollout for that class of service needs explicit **call
-draining**: mark an instance as not accepting new calls, let it keep
-serving the calls already assigned to it until they naturally end, and
-only then retire it. That's a meaningfully different (and harder) problem
-than what `nginx -s reload` solves for free here - it needs the
-application itself to expose a "draining" state and the deploy tooling to
-poll "is this instance's active-call count zero yet" before terminating
-it, rather than a fixed short timeout. Most web services never have to
-solve this; it's specific to stateful real-time media services holding
-long-lived sessions.
-
 ## Chaos engineering: the project's actual tool for this
 
 Rather than building a separate chaos-injection mechanism, this
-project's `llm-gateway` service (port 8001, built by another agent
-working in parallel on `services/`) is the chaos-engineering practice
-tool: it exposes runtime toggles for injected latency and error rate via
-`POST /admin/chaos`.
+project's `llm-gateway` service (port 8001) is the chaos-engineering
+practice tool: it exposes runtime toggles for injected latency and error
+rate via `POST /admin/chaos`.
 
 Example - inject 2 seconds of latency into every gateway call:
 
@@ -522,7 +457,7 @@ a fault you didn't cause and don't yet understand:
       runbook asks you to exercise for a real incident, practiced here risk-free.
 - [ ] **eval-service's `eval_pass_rate`** - if `CHAOS_ERROR_RATE` is high
       enough to cause scenario failures, confirm the eval gate in
-      [`../ci-cd/`](../ci-cd/) would actually catch it: run
+      [`../../ci-cd/`](../../ci-cd/) would actually catch it: run
       `POST /scenarios/run-all` against `eval-service` while chaos is
       active and see the pass rate drop.
 - [ ] **Try the runbook live**: with chaos active, walk the

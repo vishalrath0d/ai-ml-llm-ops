@@ -130,7 +130,7 @@ flowchart TB
 |---|---|---|
 | **LLMOps** | `llm-gateway`, `agent-service`, Langfuse | Provider fallback behavior, prompt/tool-call traces, chaos injection, token usage, inline guardrails (`llm-gateway`), sampled online-eval judging (`agent-service`) |
 | **MLOps** | `mlflow`, `feature-store` | Experiment tracking, model registry/aliasing (baseline/rollback), and — live, not just a demo — the urgency classifier combining message text with `feature-store`'s online customer features |
-| **AIOps** (here: ops-for-the-AI-system, i.e. classic ops applied to this AI stack — see `docs/concepts/02-llmops-mlops-tooling.md` §1 for why that's a different thing from "AI-for-ops") | `prometheus`, `grafana`, `eval-service` + `ci-cd/` | Latency/error-rate dashboards, eval-gated deploys, incident runbooks (`docs/sre-practices.md`) |
+| **AIOps** (here: ops-for-the-AI-system, i.e. classic ops applied to this AI stack — see `docs/concepts/02-llmops-mlops-tooling.md` §1 for why that's a different thing from "AI-for-ops") | `prometheus`, `grafana`, `eval-service` + `ci-cd/` | Latency/error-rate dashboards, eval-gated deploys, incident runbooks (`docs/operations/sre-practices.md`) |
 
 ## How it all works
 
@@ -418,7 +418,7 @@ sequenceDiagram
 | `langfuse` | a common self-hosted Langfuse architecture: web+worker+Postgres+ClickHouse+Redis+S3 |
 | `feature-store` | what many teams don't have yet — Feast, filling the same role a production feature-serving layer would need. Not just a demo: `agent-service`'s urgency classifier is a real, live consumer — see [How it all works §9](#9-feast-a-real-live-input-to-the-urgency-classifier) |
 | `observability` (Prometheus+Grafana) | what many teams don't have yet — just logs, no metrics/dashboards |
-| `ci-cd`, `sre` (docs at `docs/sre-practices.md`), `load-testing` | closing common production gaps: no eval-gated deploys, no runbooks/MTTD-MTTR tracking, no blue-green automation, no chaos testing, no load testing |
+| `ci-cd`, `sre` (blue-green demo; broader SRE practices at `docs/operations/sre-practices.md`), `load-testing` | closing common production gaps: no eval-gated deploys, no runbooks/MTTD-MTTR tracking, no blue-green automation, no chaos testing, no load testing |
 
 ## Quick start
 
@@ -465,9 +465,9 @@ A teammate cloning this repo and running `docker compose up -d --build` gets a f
 
 - **Fastest path**: copy `.env.example` to `.env` and fill in `GEMINI_API_KEY` (or `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`) — real, hosted-model quality with no other setup.
 - **Zero-cost path**: leave all provider keys blank and run `docker compose exec ollama ollama pull qwen2.5:0.5b` once — fully free and offline, lower quality/slower responses (see `docs/concepts/01-foundational-ai-ml.md` §9 for why a small CPU-only model behaves this way).
-- **Never commit real keys.** `.env` is (and must stay) gitignored; `.env.example` stays the template with every value blank. See `docs/environments.md` for how the same mechanism scopes to dev/test/staging/prod, not just "got a key or not."
+- **Never commit real keys.** `.env` is (and must stay) gitignored; `.env.example` stays the template with every value blank. See `docs/operations/environments.md` for how the same mechanism scopes to dev/test/staging/prod, not just "got a key or not."
 
-**See [`docs/testing-and-navigation.md`](docs/testing-and-navigation.md) for every service's interactive API docs (Swagger UI), all the third-party UIs (Grafana/MLflow/Prometheus/Langfuse — screen by screen, mapped to code), a guided curl walkthrough, and a dedicated section on testing by AI/ML/LLM Ops discipline, and [`docs/environments.md`](docs/environments.md) for how CORS/auth/rate-limiting change across dev/test/staging/prod.**
+**See [`docs/operations/testing-and-navigation.md`](docs/operations/testing-and-navigation.md) for every service's interactive API docs (Swagger UI), all the third-party UIs (Grafana/MLflow/Prometheus/Langfuse — screen by screen, mapped to code), a guided curl walkthrough, and a dedicated section on testing by AI/ML/LLM Ops discipline, and [`docs/operations/environments.md`](docs/operations/environments.md) for how CORS/auth/rate-limiting change across dev/test/staging/prod.**
 
 That starts **12 services by default**: `web-ui`, `llm-gateway`+`ollama`, `rag-service`, `agent-service`, `eval-service`, `feature-store`, shared `postgres`, `mlflow`+`mlflow-training` (the one-shot auto-seed job — it exits once the model is trained, which is why it's not counted in the running-container totals below), `prometheus`+`grafana`. Idle memory footprint is ~1.4GB (verified) — comfortable even on an 8GB-RAM machine.
 
@@ -516,7 +516,7 @@ Each of these is meant to be *done*, not just read about — that's the point of
 7. **Feature store / train-serve skew.** `cd services/feature-store/feature_repo && pip install -r ../requirements.txt && python demo.py` — see the same customer's feature value differ (or not) between offline training-time retrieval and online serving-time retrieval.
 8. **Quantization.** `cd services/llm-gateway && python quantization_demo.py` — compares memory footprint of a small model at fp32 vs 8-bit.
 9. **Eval-gated CI.** Read `.github/workflows/` and `ci-cd/` — both add a stage many real pipelines skip: fail the deploy if `eval_pass_rate` regresses.
-10. **SRE: incidents, MTTD/MTTR, blue-green.** Read `docs/sre-practices.md`, then run `sre/blue_green_demo.sh` to see a zero-downtime cutover on a toy service.
+10. **SRE: incidents, MTTD/MTTR, blue-green.** Read `docs/operations/sre-practices.md`, then see `sre/README.md` and run `sre/blue_green_demo.sh` to see a zero-downtime cutover on a toy service.
 
 ## Verified: a real end-to-end run
 

@@ -61,7 +61,7 @@ services:
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
-      # See docs/environments.md for the full story -- ENVIRONMENT defaults
+      # See docs/operations/environments.md for the full story -- ENVIRONMENT defaults
       # to dev, which is the only environment where CORS defaults to "*"
       # and auth defaults to off. RATE_LIMIT_PER_MINUTE applies regardless
       # of environment (see app/rate_limit.py).
@@ -145,7 +145,7 @@ services:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002}
-      # See docs/environments.md -- dev is the only environment where CORS
+      # See docs/operations/environments.md -- dev is the only environment where CORS
       # defaults to "*" and auth defaults to off.
       ENVIRONMENT: ${ENVIRONMENT:-dev}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
@@ -225,7 +225,7 @@ services:
       URGENCY_MODEL_NAME: "support-urgency-classifier"
       URGENCY_MODEL_ALIAS: "champion"
       MODEL_REFRESH_SECONDS: "60"
-      # See docs/environments.md -- dev is the only environment where CORS
+      # See docs/operations/environments.md -- dev is the only environment where CORS
       # defaults to "*" and auth defaults to off.
       ENVIRONMENT: ${ENVIRONMENT:-dev}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
@@ -270,7 +270,7 @@ services:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002}
-      # See docs/environments.md -- dev is the only environment where CORS
+      # See docs/operations/environments.md -- dev is the only environment where CORS
       # defaults to "*" and auth defaults to off.
       ENVIRONMENT: ${ENVIRONMENT:-dev}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
@@ -377,7 +377,7 @@ services:
     # explicitly documented by mlflow as "not recommended for production" --
     # fine as the DEFAULT here because this stack starts out never leaving
     # your machine, but that stops being true the moment mlflow exists in a
-    # real staging/prod environment (see docs/environments.md) -- so this is now
+    # real staging/prod environment (see docs/operations/environments.md) -- so this is now
     # env-var-driven, not a hardcoded "*", with a real allowlist expected
     # once MLFLOW_ALLOWED_HOSTS is actually set for a non-dev environment.
     command: >

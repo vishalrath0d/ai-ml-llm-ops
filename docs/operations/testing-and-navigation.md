@@ -1,10 +1,10 @@
 # Testing & navigating the running stack
 
-Once `docker compose up -d --build` has finished (see `../README.md` Quick Start), here's how to actually poke at it — every UI, every API doc, and a guided walkthrough in a sensible order.
+Once `docker compose up -d --build` has finished (see `../../README.md` Quick Start), here's how to actually poke at it — every UI, every API doc, and a guided walkthrough in a sensible order.
 
 ## 0. Start here: the web UI
 
-**http://localhost:8090** is an interactive control panel built specifically so you don't have to use curl for everything — Chat (talks to `agent-service`), Knowledge Base (ingest/query `rag-service`, naive vs. hybrid side by side), Evaluations (run scenarios against `eval-service`, see judge scores live), and Gateway & Chaos (raw `llm-gateway` testing + the latency/error-rate injection controls). See `../services/web-ui/README.md` for how it's wired (plain HTML/JS, no build step, CORS-enabled on all 4 backends specifically to support it).
+**http://localhost:8090** is an interactive control panel built specifically so you don't have to use curl for everything — Chat (talks to `agent-service`), Knowledge Base (ingest/query `rag-service`, naive vs. hybrid side by side), Evaluations (run scenarios against `eval-service`, see judge scores live), and Gateway & Chaos (raw `llm-gateway` testing + the latency/error-rate injection controls). See `../../services/web-ui/README.md` for how it's wired (plain HTML/JS, no build step, CORS-enabled on all 4 backends specifically to support it).
 
 Everything below also works via curl/Swagger if you prefer — the web UI is a convenience layer on top of the same APIs, not a replacement for them.
 
@@ -43,9 +43,9 @@ Swagger UI lets you **execute real requests from the browser** ("Try it out" but
 | Grafana | http://localhost:3001 | login `admin`/`admin`, change password when prompted. Dashboard **"AI Ops Overview"** is pre-provisioned — no setup needed to see it. |
 | Langfuse | http://localhost:3000 | Part of the default stack, fully auto-provisioned — an org/project/API-keypair is created on first boot (see README's "Verified" section), so traces appear with zero signup or setup. Log in with the auto-created admin (`admin@aiops.local` / `localdev12345`) only if you want to click around the UI yourself. |
 | MLflow | http://localhost:5050 | nothing to set up — it's empty until you run `train_and_log.py` (see exercise 6 below). |
-| Prometheus | http://localhost:9090 | nothing to set up. Use the "Graph" tab to run any PromQL query listed in `../services/observability/README.md` directly, before it's a Grafana panel. |
-| Locust | http://localhost:8089 (only after you run it — see `../load-testing/README.md`) | not part of `docker compose up`; run it separately per its README. |
-| Langfuse MinIO console | http://localhost:9191 | only relevant if you need to inspect raw stored trace media; login `minio`/`sPSzqRzqorODt4IoKZnKcw` (placeholder dev creds, see `../docker-compose.yml`). |
+| Prometheus | http://localhost:9090 | nothing to set up. Use the "Graph" tab to run any PromQL query listed in `../../services/observability/README.md` directly, before it's a Grafana panel. |
+| Locust | http://localhost:8089 (only after you run it — see `../../load-testing/README.md`) | not part of `docker compose up`; run it separately per its README. |
+| Langfuse MinIO console | http://localhost:9191 | only relevant if you need to inspect raw stored trace media; login `minio`/`sPSzqRzqorODt4IoKZnKcw` (placeholder dev creds, see `../../docker-compose.yml`). |
 
 ## 3b. Navigating MLflow & Langfuse, screen by screen — mapped to the exact code that produced each screen
 
@@ -56,30 +56,30 @@ The table above tells you the URL. This section tells you what you're actually l
 MLflow has two top-level views, and it's easy to conflate them:
 
 1. **Experiments** (left nav) — this is where individual *training runs* live. Open the experiment `train_and_log.py` created and you'll see two runs: `baseline-v1` and `candidate-v2-skewed-data`. Click into one:
-   - **Parameters tab** — whatever was passed to `mlflow.log_param(...)` in `../services/mlflow/train_and_log.py`.
+   - **Parameters tab** — whatever was passed to `mlflow.log_param(...)` in `../../services/mlflow/train_and_log.py`.
    - **Metrics tab** — `accuracy`, logged via `mlflow.log_metric(...)` right after the held-out test set is scored. This is the number the script's own rollback logic compares between runs.
    - **Artifacts tab** — the actual serialized model (the `ColumnTransformer` + `LogisticRegression` pipeline, pickled via `mlflow.pyfunc.log_model(...)`). This is the exact file `agent-service` downloads and loads — click "MLmodel" here to see its raw metadata (Python version, flavor, signature).
 2. **Models** (top nav) — this is the **registry**, a separate concept from experiments. Open `support-urgency-classifier` and you'll see:
    - **Versions list** — v1 (baseline), v2 (the deliberately-worse candidate trained on skewed data).
    - **Aliases tab** — this is the one that matters operationally. `champion` points at whichever version is "live." `train_and_log.py` moves this pointer with `MlflowClient.set_registered_model_alias(...)` — promote it to v2, detect the regression, roll it back to v1, all visible here as a plain history of one alias being reassigned.
 
-**How this UI connects to a running request**: `../services/agent-service/app/model_registry.py` polls this exact `champion` alias (`get_model_version_by_alias`), downloads whatever version it points to, and caches it in memory. `GET /admin/model-status` on agent-service (localhost:8003) tells you which version is *currently loaded in the running process* — compare that against what the Aliases tab says is *currently registered* to see the gap between "promoted" and "actually serving traffic" (they sync within agent-service's refresh window, or immediately via `POST /admin/reload-model`). This is the same "did my promotion actually reach production" question a real MLOps dashboard exists to answer.
+**How this UI connects to a running request**: `../../services/agent-service/app/model_registry.py` polls this exact `champion` alias (`get_model_version_by_alias`), downloads whatever version it points to, and caches it in memory. `GET /admin/model-status` on agent-service (localhost:8003) tells you which version is *currently loaded in the running process* — compare that against what the Aliases tab says is *currently registered* to see the gap between "promoted" and "actually serving traffic" (they sync within agent-service's refresh window, or immediately via `POST /admin/reload-model`). This is the same "did my promotion actually reach production" question a real MLOps dashboard exists to answer.
 
 ### Langfuse (http://localhost:3000)
 
 Langfuse's home view is a **Traces** table — one row per traced unit of work. Two different trace names show up, and they come from two different services' `app/tracing.py`:
 
-- **`agent-service.chat`** — one root trace per `/chat` request, started in `../services/agent-service/app/tracing.py`'s `traced_chat_turn(...)` context manager (see `app/main.py`'s `/chat` handler for where it's opened).
-- **`chat-completion`** — a *separate* trace opened by `../services/llm-gateway/app/tracing.py` (see `app/main.py:148`) every time llm-gateway itself handles a completion request — including calls that didn't come from agent-service (e.g. testing llm-gateway directly via Swagger or the web UI's "Gateway & Chaos" tab).
+- **`agent-service.chat`** — one root trace per `/chat` request, started in `../../services/agent-service/app/tracing.py`'s `traced_chat_turn(...)` context manager (see `app/main.py`'s `/chat` handler for where it's opened).
+- **`chat-completion`** — a *separate* trace opened by `../../services/llm-gateway/app/tracing.py` (see `app/main.py:148`) every time llm-gateway itself handles a completion request — including calls that didn't come from agent-service (e.g. testing llm-gateway directly via Swagger or the web UI's "Gateway & Chaos" tab).
 
 Click into any trace to get the **span tree** — the actual call graph for that one turn, in order, with input/output captured at each step:
 
-- Inside an `agent-service.chat` trace, nested spans/generations show the downstream call into llm-gateway, and (if the message triggered a tool call) a span for `crm_lookup` — see `../services/agent-service/app/tools_impl.py` and `app/mcp_server.py` for what that tool call actually does.
-- Inside a `chat-completion` trace, the nested span is named after whichever provider handled it (`../services/llm-gateway/app/main.py`'s `provider_name` / `chain[0]` — e.g. `ollama`), so a multi-provider fallback chain is visible as multiple attempted child spans, not just one.
+- Inside an `agent-service.chat` trace, nested spans/generations show the downstream call into llm-gateway, and (if the message triggered a tool call) a span for `crm_lookup` — see `../../services/agent-service/app/tools_impl.py` and `app/mcp_server.py` for what that tool call actually does.
+- Inside a `chat-completion` trace, the nested span is named after whichever provider handled it (`../../services/llm-gateway/app/main.py`'s `provider_name` / `chain[0]` — e.g. `ollama`), so a multi-provider fallback chain is visible as multiple attempted child spans, not just one.
 
-**Scores tab** on a trace: this is where `../services/agent-service/app/online_eval.py` writes to — a sampled (`ONLINE_EVAL_SAMPLE_RATE`), asynchronous LLM-judge score, attached after the fact via `Langfuse.create_score(trace_id=...)`. Read the module docstring in `online_eval.py` before assuming this is the only quality signal in the system — it's explicitly *not* the same thing as `eval-service`'s offline scenario grading (different system, different trigger, see the root README's "How it all works" §3 for the three-way comparison against guardrails too), and it's also not what decided pass/fail for anything — it's a production quality signal riding alongside a trace a human would already be looking at.
+**Scores tab** on a trace: this is where `../../services/agent-service/app/online_eval.py` writes to — a sampled (`ONLINE_EVAL_SAMPLE_RATE`), asynchronous LLM-judge score, attached after the fact via `Langfuse.create_score(trace_id=...)`. Read the module docstring in `online_eval.py` before assuming this is the only quality signal in the system — it's explicitly *not* the same thing as `eval-service`'s offline scenario grading (different system, different trigger, see the root README's "How it all works" §3 for the three-way comparison against guardrails too), and it's also not what decided pass/fail for anything — it's a production quality signal riding alongside a trace a human would already be looking at.
 
-**What you will *not* find a Langfuse score for**: a guardrail firing. `../services/llm-gateway/app/guardrails.py`'s checks are deliberately cheap regex/keyword rules that run inline, in the critical path, on every request — fast enough to block or redact before a response goes out, but they don't call an LLM and don't write a Langfuse score. If you want to see a guardrail actually fire, use the web UI's "Gateway & Chaos" tab or POST a message containing something like a fake credit-card number directly to llm-gateway and diff the request/response — the trace will show the completion happened, but the redaction itself is a guardrails.py code path, not a Langfuse artifact.
+**What you will *not* find a Langfuse score for**: a guardrail firing. `../../services/llm-gateway/app/guardrails.py`'s checks are deliberately cheap regex/keyword rules that run inline, in the critical path, on every request — fast enough to block or redact before a response goes out, but they don't call an LLM and don't write a Langfuse score. If you want to see a guardrail actually fire, use the web UI's "Gateway & Chaos" tab or POST a message containing something like a fake credit-card number directly to llm-gateway and diff the request/response — the trace will show the completion happened, but the redaction itself is a guardrails.py code path, not a Langfuse artifact.
 
 **Verifying the wiring yourself, without trusting this doc**: Langfuse's actual trace/span/score data lives in ClickHouse, not Postgres (Postgres only holds org/project/API-key metadata) — so if traces aren't showing in the UI, checking Postgres will mislead you into thinking nothing is captured. Check the real store directly:
 ```bash
@@ -119,7 +119,7 @@ curl -s http://localhost:8003/admin/model-status
 # compare "version" here against the Aliases tab for support-urgency-classifier in the MLflow UI
 ```
 
-If any of these come back empty/zero on a fresh stack, that's expected until you've sent at least one `/chat` request and run `../services/mlflow/run_training.sh` once — see section 4 below for exactly that walkthrough. If they're still empty *after* that, something is actually disconnected and worth debugging via `docker compose logs -f <service>` before trusting anything the UI shows.
+If any of these come back empty/zero on a fresh stack, that's expected until you've sent at least one `/chat` request and run `../../services/mlflow/run_training.sh` once — see section 4 below for exactly that walkthrough. If they're still empty *after* that, something is actually disconnected and worth debugging via `docker compose logs -f <service>` before trusting anything the UI shows.
 
 ## 4. Guided walkthrough — hit every service once, in order
 
@@ -164,19 +164,19 @@ Then:
 
 A few things in this project are standalone scripts, not always-on services — they're not part of `docker compose up`, run them separately per their own README:
 
-- `../services/mlflow/train_and_log.py` — baseline/rollback demo (needs `docker compose up mlflow postgres` running first).
-- `../services/feature-store/feature_repo/demo.py` — Feast train/serve-skew demo (fully self-contained, no docker needed).
-- `../services/llm-gateway/quantization_demo.py` — fp32 vs 8-bit memory comparison (fully self-contained, no docker needed).
-- `../load-testing/locustfile.py` — needs the stack already running (`locust -f locustfile.py --host http://localhost:8003`).
-- `../sre/blue_green_demo.sh` — fully self-contained toy demo, no dependency on the rest of the stack.
+- `../../services/mlflow/train_and_log.py` — baseline/rollback demo (needs `docker compose up mlflow postgres` running first).
+- `../../services/feature-store/feature_repo/demo.py` — Feast train/serve-skew demo (fully self-contained, no docker needed).
+- `../../services/llm-gateway/quantization_demo.py` — fp32 vs 8-bit memory comparison (fully self-contained, no docker needed).
+- `../../load-testing/locustfile.py` — needs the stack already running (`locust -f locustfile.py --host http://localhost:8003`).
+- `../../sre/blue_green_demo.sh` — fully self-contained toy demo, no dependency on the rest of the stack.
 
 ## 6. Troubleshooting quick reference
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `llm-gateway` chat call hangs or 500s | Ollama model not pulled yet | `docker compose exec ollama ollama pull qwen2.5:0.5b` |
-| `eval-service` won't start | Postgres not ready yet / `eval_db` missing | `docker compose logs postgres` — confirm `../postgres-init/01-init-databases.sql` ran; restart with `docker compose restart eval-service` once postgres is healthy |
-| Port already in use on `up` | Something else on your machine already bound that port | Check `../docker-compose.yml`'s comments — `mlflow` and the Langfuse MinIO ports were already moved once during integration for exactly this reason (macOS AirPlay on 5000, a Prometheus/MinIO clash on 9090) |
+| `eval-service` won't start | Postgres not ready yet / `eval_db` missing | `docker compose logs postgres` — confirm `../../postgres-init/01-init-databases.sql` ran; restart with `docker compose restart eval-service` once postgres is healthy |
+| Port already in use on `up` | Something else on your machine already bound that port | Check `../../docker-compose.yml`'s comments — `mlflow` and the Langfuse MinIO ports were already moved once during integration for exactly this reason (macOS AirPlay on 5000, a Prometheus/MinIO clash on 9090) |
 | Grafana panels all show "No data" | Prometheus hasn't scraped yet, or the app services aren't running | Wait 15-30s (scrape interval), check http://localhost:9090/targets — every target should show `UP` |
 | Ollama model load fails / `llama-server process has terminated: signal: killed` in `docker compose logs ollama` | Docker Desktop's VM ran out of memory | Docker Desktop → Settings → Resources → bump Memory to at least 5GB, then restart Docker Desktop. The full 17-container default stack (Langfuse included) runs at ~3.6GB under load in this project's own testing at 5GB allocated — 4GB (Docker's own default) isn't enough on an 8GB host. |
 | `llm-gateway`/`agent-service`/`eval-service` calls feel slow | CPU-only Ollama inference — post-fix (see README's "Verified" section) this is ~18-25s per call on constrained hardware, not the 48-165s seen before the memory fixes | Still use a generous `curl -m 120`+ client-side timeout to be safe. `agent-service`'s `LLM_REQUEST_TIMEOUT_SECONDS` (180s) and `eval-service`'s `HTTP_TIMEOUT_SECONDS` (240s) already have headroom built in. For a snappier feel, set a real GEMINI_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY in `.env` -- `LLM_PROVIDER_CHAIN` tries them before ever reaching Ollama. |
@@ -227,14 +227,14 @@ Then open http://localhost:5050 and confirm both versions and the alias history 
     -d '{"session_id":"f2","message":"Any update on the issue I reported earlier?","customer_id":"cust_003"}'
   # -> "urgency":"urgent" (cust_003: at-risk, 3 open tickets) -- same text, different customer, different answer
   ```
-  See `../services/feature-store/README.md`'s "Live integration" section.
+  See `../../services/feature-store/README.md`'s "Live integration" section.
 - **`feature-store`'s train/serve-skew lesson, standalone** — this part is still fully self-contained, no Docker dependency at all: `cd services/feature-store/feature_repo && pip install -r ../requirements.txt && python demo.py`. The thing to actually check in the output: does the offline (training-time) value for a customer match the online (serving-time) value for the same customer at the same point in time? A mismatch in that specific comparison is what "train/serve skew" looks like concretely.
-- **Baseline/rollback drill, the literal mechanic** — after running `run_training.sh` once, flip `champion` to the OTHER (bad) version directly (`MlflowClient(tracking_uri=...).set_registered_model_alias(...)`, see `../services/mlflow/README.md` for the exact snippet), reload, and repeat the SAME chat message — watch `urgency` change from `"urgent"` to `"normal"`. That state flip, live, is "how do I revert" answered concretely instead of hypothetically.
+- **Baseline/rollback drill, the literal mechanic** — after running `run_training.sh` once, flip `champion` to the OTHER (bad) version directly (`MlflowClient(tracking_uri=...).set_registered_model_alias(...)`, see `../../services/mlflow/README.md` for the exact snippet), reload, and repeat the SAME chat message — watch `urgency` change from `"urgent"` to `"normal"`. That state flip, live, is "how do I revert" answered concretely instead of hypothetically.
 
 
-### AIOps (ops-for-this-AI-system — not to be confused with AI-for-ops; see `concepts/02-llmops-mlops-tooling.md` §1) — `eval-service`, `prometheus`, `grafana`, `ci-cd/`, `sre/`
+### AIOps (ops-for-this-AI-system — not to be confused with AI-for-ops; see `../concepts/02-llmops-mlops-tooling.md` §1) — `eval-service`, `prometheus`, `grafana`, `ci-cd/`, `sre/`
 
-**Whole-system test:** the eval-gate script in `../ci-cd/github-actions-ci.yml` is the canonical whole-system AIOps check — it brings up the stack, runs every service's own test suite, then calls `eval-service`'s `/scenarios/run-all` and fails the build if `eval_pass_rate` drops below threshold. Run its logic locally without GitHub Actions:
+**Whole-system test:** the eval-gate script in `../../ci-cd/github-actions-ci.yml` is the canonical whole-system AIOps check — it brings up the stack, runs every service's own test suite, then calls `eval-service`'s `/scenarios/run-all` and fails the build if `eval_pass_rate` drops below threshold. Run its logic locally without GitHub Actions:
 ```bash
 curl -X POST localhost:8004/scenarios/run-all
 curl -s localhost:8004/metrics | grep 'eval_pass_rate{scenario="overall"}'
@@ -245,8 +245,8 @@ curl -s localhost:8004/metrics | grep 'eval_pass_rate{scenario="overall"}'
 **Per-service tests:**
 - **`eval-service` in isolation** — create and run a scenario without touching the CI script at all: `curl -X POST localhost:8004/scenarios -d '{"name":"test","opening_message":"hi","success_criteria":"agent should be polite"}'` then `curl -X POST localhost:8004/scenarios/{id}/run`. Its own `pytest` suite (36 tests) mocks both `agent-service` and `llm-gateway` entirely — `cd services/eval-service && pytest` — for testing the judge-prompt/JSON-parsing logic in total isolation.
 - **`prometheus` in isolation** — bypass Grafana entirely and query raw metrics: open http://localhost:9090/graph and run `histogram_quantile(0.95, sum(rate(agent_service_chat_latency_seconds_bucket[5m])) by (le))` directly. Check http://localhost:9090/targets to confirm every scrape target shows `UP` before assuming a dashboard problem is a data problem.
-- **`grafana` in isolation** — confirm provisioning worked without touching any app service: the "AI Ops Overview" dashboard should already exist under Dashboards on a fresh `docker compose up`, with Prometheus already wired as a datasource — if either is missing, the problem is in `../services/observability/grafana/provisioning/`, not in the metrics themselves.
-- **SRE drill** — inject chaos in isolation (`curl -X POST localhost:8001/admin/chaos -d '{"latency_ms":3000,"error_rate":0.2}'`), then watch three things independently: Grafana's latency panel (metrics), a Langfuse trace if enabled (tracing), and how long it takes YOU to notice something's wrong (that's a manual MTTD measurement — see `docs/sre-practices.md#mttd-and-mttr-tracking` for the template to log it in). Reset with `latency_ms:0, error_rate:0.0` when done. Separately, `../sre/blue_green_demo.sh` is fully self-contained and tests zero-downtime cutover mechanics without touching any of the AI services at all.
+- **`grafana` in isolation** — confirm provisioning worked without touching any app service: the "AI Ops Overview" dashboard should already exist under Dashboards on a fresh `docker compose up`, with Prometheus already wired as a datasource — if either is missing, the problem is in `../../services/observability/grafana/provisioning/`, not in the metrics themselves.
+- **SRE drill** — inject chaos in isolation (`curl -X POST localhost:8001/admin/chaos -d '{"latency_ms":3000,"error_rate":0.2}'`), then watch three things independently: Grafana's latency panel (metrics), a Langfuse trace if enabled (tracing), and how long it takes YOU to notice something's wrong (that's a manual MTTD measurement — see `sre-practices.md#mttd-and-mttr-tracking` for the template to log it in). Reset with `latency_ms:0, error_rate:0.0` when done. Separately, `../../sre/README.md` (and `../../sre/blue_green_demo.sh`) is fully self-contained and tests zero-downtime cutover mechanics without touching any of the AI services at all.
 
 ### Quick regression sweep — "did I break anything?"
 
@@ -258,4 +258,4 @@ done
 docker compose logs --tail 100 | grep -iE "error|exception|traceback|fatal"
 docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}"
 ```
-All five URLs should return `200`, the log grep should return nothing (or only clearly-labeled harmless noise — check `../docker-compose.yml`'s comments if something new shows up), and no single container's memory should be wildly out of line with what `../README.md`'s "Verified" section documents as normal.
+All five URLs should return `200`, the log grep should return nothing (or only clearly-labeled harmless noise — check `../../docker-compose.yml`'s comments if something new shows up), and no single container's memory should be wildly out of line with what `../../README.md`'s "Verified" section documents as normal.

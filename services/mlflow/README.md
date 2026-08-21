@@ -92,7 +92,7 @@ an actual before/after example, not just registry UI screenshots.
    by MLflow as "not recommended for production" — correct as the default
    here because this stack starts out never leaving your machine, but
    that stops being true in a real staging/prod environment (see
-   `../../docs/environments.md`) — it's now env-var-driven (`MLFLOW_ALLOWED_HOSTS`
+   `../../docs/operations/environments.md`) — it's now env-var-driven (`MLFLOW_ALLOWED_HOSTS`
    in `docker-compose.yml`), not a permanent hardcoded constant.
 3. **Unpinned `scikit-learn`/`pandas` ranges across the train/serve
    boundary.** `requirements.txt` here and `../agent-service/requirements.txt`

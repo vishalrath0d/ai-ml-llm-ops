@@ -133,7 +133,7 @@ observability stack shows for the *same time window*:
    reached the model call) grew instead? That distinction tells you
    whether the bottleneck is the model provider or your own
    service/infra, the same diagnostic split described in
-   [`../docs/sre-practices.md`](../docs/sre-practices.md#chaos-engineering-the-projects-actual-tool-for-this)'s chaos-engineering section.
+   [`../docs/operations/sre-practices.md`](../docs/operations/sre-practices.md#chaos-engineering-the-projects-actual-tool-for-this)'s chaos-engineering section.
 4. **If you have `eval-service`'s `eval_pass_rate` dashboarded**, check
    whether quality held steady under load or degraded - a service that
    starts timing out mid-generation and returning truncated/degraded

@@ -301,7 +301,7 @@ for that tradeoff spelled out.
 | `LANGFUSE_PUBLIC_KEY` | *(unset)* | |
 | `LANGFUSE_SECRET_KEY` | *(unset)* | |
 | `HTTP_TIMEOUT_SECONDS` | `120.0` | Timeout for the Ollama HTTP client |
-| `ENVIRONMENT` | `dev` | See `../../docs/environments.md` — drives `CORS_ALLOWED_ORIGINS`/`REQUIRE_AUTH` defaults |
+| `ENVIRONMENT` | `dev` | See `../../docs/operations/environments.md` — drives `CORS_ALLOWED_ORIGINS`/`REQUIRE_AUTH` defaults |
 | `CORS_ALLOWED_ORIGINS` | `*` in dev, none otherwise | Comma-separated allowed origins |
 | `API_KEY` | *(unset)* | Checked via `X-API-Key` header when `REQUIRE_AUTH` is on |
 | `REQUIRE_AUTH` | `false` in dev, `true` otherwise | |
@@ -398,7 +398,7 @@ app/
   schemas.py                 # OpenAI-compatible request/response models
   metrics.py                 # Prometheus metrics definitions (incl. cost)
   tracing.py                 # Langfuse wrapper (graceful no-op if unconfigured)
-  auth.py                    # API-key middleware (../../docs/environments.md)
+  auth.py                    # API-key middleware (../../docs/operations/environments.md)
   rate_limit.py               # Per-client-IP rate limiting middleware
   logging_setup.py            # JSON logging outside dev
   providers/

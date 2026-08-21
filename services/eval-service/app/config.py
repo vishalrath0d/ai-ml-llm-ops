@@ -47,7 +47,7 @@ LANGFUSE_SECRET_KEY: str | None = os.getenv("LANGFUSE_SECRET_KEY") or None
 
 # --- Environment / multi-env posture -------------------------------------
 # See agent-service/app/config.py's identical block for the full rationale
-# and ../../../docs/environments.md for the project-wide story.
+# and ../../../docs/operations/environments.md for the project-wide story.
 ENVIRONMENT: str = os.getenv("ENVIRONMENT", "dev").strip().lower()
 
 CORS_ALLOWED_ORIGINS: list[str] = [

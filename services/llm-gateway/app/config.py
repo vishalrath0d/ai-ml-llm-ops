@@ -119,7 +119,7 @@ class Settings:
 
         # --- Environment / multi-env posture --------------------------
         # See ../../agent-service/app/config.py's identical block for the
-        # full rationale and ../../../docs/environments.md for the project-wide
+        # full rationale and ../../../docs/operations/environments.md for the project-wide
         # story.
         self.ENVIRONMENT: str = os.getenv("ENVIRONMENT", "dev").strip().lower()
 

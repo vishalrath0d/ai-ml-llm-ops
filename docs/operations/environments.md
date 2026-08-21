@@ -3,12 +3,12 @@
 Everything in this project ran as a single, implicit "local dev" environment
 until now — one `.env`, one set of defaults, CORS wide open, no auth, no
 rate-limit awareness of environment. That's the right default for a
-zero-setup learning project, but it's also exactly the posture the audit in
-this file's sibling docs flagged as a real blocker the moment any of this
-stack is reachable from anywhere other than your own laptop. This doc is
-the answer to "how do I actually run this as dev/test/staging/prod," using
-nothing more exotic than env vars — no new tooling, no separate codebases,
-no separate Dockerfiles per environment.
+zero-setup learning project, but it's also exactly the posture that becomes
+a real blocker the moment any of this stack is reachable from anywhere
+other than your own laptop. This doc is the answer to "how do I actually
+run this as dev/test/staging/prod," using nothing more exotic than env
+vars — no new tooling, no separate codebases, no separate Dockerfiles per
+environment.
 
 ## The one knob that drives everything else: `ENVIRONMENT`
 
@@ -33,7 +33,7 @@ doesn't actually have yet (see "What this does NOT give you" below).
 ## API-key auth (`API_KEY` / `REQUIRE_AUTH`)
 
 Every one of the 4 services enforces one shared API key via
-`ApiKeyMiddleware` (`../services/*/app/auth.py` — same design in each,
+`ApiKeyMiddleware` (`../../services/*/app/auth.py` — same design in each,
 adjusted to each service's own config style). Set `API_KEY` to a real
 secret and either leave `REQUIRE_AUTH` unset (it'll default on for any
 non-`dev` `ENVIRONMENT`) or set it explicitly:
@@ -66,7 +66,7 @@ mesh identity layer instead of one shared secret everyone holds.
 `llm-gateway` — the single choke point every LLM call in this project
 passes through, and the most expensive place per request to let a runaway
 loop or retry storm run wild — enforces a per-client-IP requests/minute
-cap via `../services/llm-gateway/app/rate_limit.py`. Default is `60/minute`;
+cap via `../../services/llm-gateway/app/rate_limit.py`. Default is `60/minute`;
 override with `RATE_LIMIT_PER_MINUTE=<n>`. This one is NOT
 environment-derived (it applies the same regardless of `ENVIRONMENT`) —
 unlike CORS/auth, there's no "dev" reason to want an unbounded gateway.
@@ -97,7 +97,7 @@ MLFLOW_ALLOWED_HOSTS=mlflow,localhost   # exact hostnames actually calling it
 ## Setting these per environment
 
 There's no separate `docker-compose.staging.yml` here — the same
-`../docker-compose.yml` is intentionally environment-agnostic; only the
+`../../docker-compose.yml` is intentionally environment-agnostic; only the
 `.env` file (or whatever your real deployment's secret/config injection
 looks like — a Kubernetes ConfigMap+Secret pair, an ECS task definition's
 environment block, etc.) changes between environments. Four example
@@ -108,7 +108,7 @@ profiles:
 ENVIRONMENT=dev
 # CORS_ALLOWED_ORIGINS, API_KEY, REQUIRE_AUTH all left unset
 
-# .env.test -- CI / automated test runs (see ../.github/workflows/ci.yml)
+# .env.test -- CI / automated test runs (see ../../.github/workflows/ci.yml)
 ENVIRONMENT=test
 REQUIRE_AUTH=false          # tests hit services directly, no browser involved
 LLM_PROVIDER_CHAIN=ollama   # free, offline, no hosted API key needed in CI secrets
@@ -142,13 +142,13 @@ Being honest about the scope here matters more than it sounds: this is
 this doc:
 
 - **No environment-specific infrastructure.** There's still one
-  `../docker-compose.yml`; a real staging/prod would very likely run on
+  `../../docker-compose.yml`; a real staging/prod would very likely run on
   different infrastructure entirely (a real Kubernetes cluster or ECS
   service, not docker-compose on one host), not just a differently-
   configured copy of the same compose file.
 - **No promotion pipeline between environments.** Nothing here
   automatically moves a build from test → staging → prod on a gate passing
-  — that's what `../.github/workflows/ci.yml`'s eval gate is a *piece* of
+  — that's what `../../.github/workflows/ci.yml`'s eval gate is a *piece* of
   (the "should this be allowed to progress" check), not the whole pipeline.
 - **No per-environment secret storage.** `API_KEY`/`GEMINI_API_KEY`/etc.
   living in a local `.env` file is correct for `dev` and fine for a
@@ -157,11 +157,11 @@ this doc:
   never in a committed file — this project's `.env.example` stays the
   template with all values blank specifically so nothing real ever
   accidentally gets committed.
-- **No environment-specific scaling/resource limits.** `../docker-compose.yml`
+- **No environment-specific scaling/resource limits.** `../../docker-compose.yml`
   doesn't set replica counts or resource limits differently per
   environment; a real prod deployment would need those on infrastructure
   this project doesn't attempt to model (see
-  `concepts/04-finops-and-production-judgment.md` §11 for the scaling
+  `../concepts/04-finops-and-production-judgment.md` §11 for the scaling
   levers this would actually need).
 
 Closing those gaps for real is a genuinely bigger, infrastructure-shaped

@@ -142,7 +142,7 @@ That's exactly why an eval-gated pipeline is the direct AI-system analog
 of "run unit tests, block merge on failure": the golden eval set is your
 test cases, the eval pass rate is your pass/fail signal, and a fixed
 threshold (or, in a more mature setup, a fixed baseline score - see
-[`../docs/sre-practices.md`](../docs/sre-practices.md) and the reliability
+[`../docs/operations/sre-practices.md`](../docs/operations/sre-practices.md) and the reliability
 doc's section 5 on baselines/rollback) is what you're diffing against.
 Skipping this gate doesn't mean AI quality regressions don't happen - it
 means they happen silently, in production, and you find out from a
