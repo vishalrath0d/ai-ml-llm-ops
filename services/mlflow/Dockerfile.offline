@@ -1,0 +1,30 @@
+# Offline build variant -- see ../llm-gateway/Dockerfile.offline for why
+# this exists and ../../scripts/offline-up.sh for how it's driven. Installs
+# from pre-downloaded wheels (_offline_wheels/, fetched on the HOST by
+# scripts/offline-up.sh) instead of a live pip install; curl still needs a
+# real apt-get since it's a system package, not a wheel -- offline-up.sh's
+# own egress check already confirmed the host (not the container) can
+# reach the internet, but apt itself still needs the container's own
+# package mirror to be reachable, which is a DIFFERENT egress path than
+# pip's and has been observed working even when pip's isn't -- if this
+# specific step ever fails offline too, this Dockerfile is the one to
+# extend with a further offline apt fallback.
+FROM python:3.11-slim
+
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --shell /usr/sbin/nologin --create-home appuser
+
+WORKDIR /app
+
+COPY requirements.txt .
+COPY _offline_wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
+    && apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY train_and_log.py entrypoint.sh ./
+RUN chmod +x entrypoint.sh && chown -R appuser:appuser /app
+
+USER appuser
+
+CMD ["./entrypoint.sh"]

@@ -1,0 +1,27 @@
+# Offline build variant -- see ../llm-gateway/Dockerfile.offline for why
+# this exists and ../../scripts/offline-up.sh for how it's driven.
+FROM python:3.11-slim
+
+RUN groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --shell /usr/sbin/nologin --create-home appuser
+
+WORKDIR /app
+
+COPY requirements.txt .
+COPY _offline_wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
+
+COPY feature_repo ./feature_repo
+WORKDIR /app/feature_repo
+
+# See Dockerfile (non-offline) for why this chown+USER has to come before
+# `feast apply`/materialize, not after.
+RUN chown -R appuser:appuser /app
+USER appuser
+
+RUN feast apply \
+    && feast materialize-incremental 2030-01-01T00:00:00
+
+EXPOSE 6566
+
+CMD ["feast", "serve", "--host", "0.0.0.0", "--port", "6566"]

@@ -1,0 +1,15 @@
+# Local, file-based Feast setup — no external infra required.
+#
+# provider: local runs everything (registry + offline store) on the local
+# filesystem. online_store: sqlite gives us a real online store (the same
+# interface a production Redis/DynamoDB online store would expose) without
+# needing to stand up Redis for a teaching demo.
+project: churn_demo
+registry: data/registry.db
+provider: local
+
+online_store:
+  type: sqlite
+  path: data/online_store.db
+
+entity_key_serialization_version: 3

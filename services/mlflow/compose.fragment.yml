@@ -1,0 +1,45 @@
+# compose.fragment.yml — MLflow tracking server + model registry
+#
+# This is a FRAGMENT meant to be merged/included into the project's root
+# docker-compose file (the integration step owns wiring all fragments
+# together into one compose project + shared network).
+#
+# IMPORTANT DEPENDENCY NOTE:
+#   This service points its --backend-store-uri at a database named
+#   `mlflow_db` on the SHARED `postgres` service that is owned by the
+#   integration step (the same Postgres instance used by eval-service,
+#   etc.). That means:
+#     1. The shared `postgres` service must exist in the merged compose
+#        file, reachable at hostname `postgres` on port 5432, with a
+#        superuser/app user `aiops` / password `aiops` (adjust to match
+#        whatever the integration step actually provisions).
+#     2. A database literally named `mlflow_db` must be created on that
+#        Postgres instance before `mlflow` can start successfully
+#        (e.g. via an init SQL script, `CREATE DATABASE mlflow_db;`, or
+#        a docker-entrypoint-initdb.d hook on the postgres service).
+#   This fragment does NOT create that database itself — it only assumes
+#   it exists. If you're wiring this up standalone without the rest of
+#   the project, either point --backend-store-uri at your own Postgres,
+#   or swap it for a local SQLite file (e.g. sqlite:///mlflow.db) for a
+#   quick smoke test.
+
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://aiops:aiops@postgres:5432/mlflow_db
+      --default-artifact-root /mlartifacts
+      --host 0.0.0.0
+    volumes:
+      - mlflow_artifacts:/mlartifacts
+    # Uncomment once the shared postgres service + mlflow_db exist:
+    # depends_on:
+    #   - postgres
+    restart: unless-stopped
+
+volumes:
+  mlflow_artifacts:
