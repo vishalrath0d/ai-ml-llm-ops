@@ -1,0 +1,76 @@
+# =============================================================================
+# compose.fragment.yml -- llm-gateway + Ollama sidecar
+# =============================================================================
+# This file is NOT meant to be run standalone (there's no top-level
+# `services:` wrapper on purpose). It contains only the two service
+# definitions this agent owns -- `llm-gateway:` and `ollama:` -- plus the
+# named volume the Ollama sidecar needs. Whoever assembles the root
+# docker-compose.yml for the whole hands-on project should:
+#
+#   1. Copy the `llm-gateway:` block below into the root file's `services:`
+#      section.
+#   2. Copy the `ollama:` block below into the root file's `services:`
+#      section.
+#   3. Merge the `ollama_data:` entry below into the root file's top-level
+#      `volumes:` section.
+#
+# FIRST-TIME SETUP after `docker compose up` -- the ollama/ollama image ships
+# with no models pre-pulled, so you must pull the default model once:
+#
+#   docker compose exec ollama ollama pull qwen2.5:0.5b
+#
+# Every other service in this project should call the llm-gateway
+# (http://llm-gateway:8001/v1/chat/completions) instead of talking to
+# Ollama/OpenAI/Anthropic directly -- see README.md for why.
+# =============================================================================
+
+llm-gateway:
+  build:
+    context: ./services/llm-gateway
+    dockerfile: Dockerfile
+  image: llm-gateway:latest
+  container_name: llm-gateway
+  ports:
+    - "8001:8001"
+  environment:
+    # Provider selection + fallback. Default: fully offline via Ollama.
+    LLM_PROVIDER: ollama
+    LLM_FALLBACK_PROVIDER: ""
+
+    OLLAMA_BASE_URL: "http://ollama:11434"
+    OLLAMA_MODEL: "qwen2.5:0.5b"
+
+    # Set these (and flip LLM_PROVIDER/LLM_FALLBACK_PROVIDER) to use a real
+    # OpenAI/Anthropic key instead of the free local model -- see README.md.
+    OPENAI_API_KEY: ""
+    OPENAI_MODEL: "gpt-4o-mini"
+
+    ANTHROPIC_API_KEY: ""
+    ANTHROPIC_MODEL: "claude-haiku-4-5-20251001"
+
+    # Chaos injection seed values -- flip live at runtime via
+    # POST /admin/chaos instead of editing these and restarting.
+    CHAOS_LATENCY_MS: "0"
+    CHAOS_ERROR_RATE: "0.0"
+
+    # Optional -- leave blank to run with tracing as a no-op.
+    LANGFUSE_HOST: ""
+    LANGFUSE_PUBLIC_KEY: ""
+    LANGFUSE_SECRET_KEY: ""
+  depends_on:
+    - ollama
+  restart: unless-stopped
+
+# Ollama sidecar -- backs the free/offline `ollama` provider in llm-gateway.
+ollama:
+  image: ollama/ollama:latest
+  container_name: ollama
+  ports:
+    - "11434:11434"
+  volumes:
+    - ollama_data:/root/.ollama
+  restart: unless-stopped
+
+# Merge this into the root compose file's top-level `volumes:` block.
+volumes:
+  ollama_data:

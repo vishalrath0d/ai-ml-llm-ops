@@ -1,0 +1,18 @@
+# Exact pins, not ranges -- see services/llm-gateway/requirements.txt's
+# comment for why (this file was the other one still using loose ranges).
+# fastapi/uvicorn/pydantic/httpx/prometheus-client pinned to the SAME
+# exact versions agent-service and llm-gateway already use.
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+sqlalchemy==2.0.52
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+httpx==0.28.1
+prometheus-client==0.26.0
+pytest==8.4.2
+pytest-asyncio==0.26.0
+# Same major version llm-gateway/rag-service use (v2, module-level
+# Langfuse().trace() API) -- see app/tracing.py. Deliberately NOT the same
+# major version as agent-service's langfuse (4.x, a different API
+# entirely) -- see llm-gateway/requirements.txt's comment.
+langfuse==2.60.10

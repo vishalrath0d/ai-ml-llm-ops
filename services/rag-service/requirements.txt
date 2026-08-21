@@ -1,0 +1,25 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+chromadb==0.5.23
+# chromadb 0.5.23 only declares `posthog>=2.4.0` (no upper bound), so pip
+# installs whatever posthog is latest -- 7.x, which replaced the old
+# module-level `capture(distinct_id, event, properties)` function with a
+# class-based client API. chromadb's bundled telemetry code still calls the
+# old 3-positional-arg signature, so newer posthog throws a TypeError on
+# every single collection/query call ("capture() takes 1 positional
+# argument but 3 were given"). Disabling telemetry via Settings/env var does
+# NOT prevent this -- the crash happens at Python's argument-binding stage,
+# before any "am I disabled" check in either library's code can run. Pinning
+# posthog back to the last 2.x release (what chromadb 0.5.23 actually
+# shipped/tested against) is the real fix.
+posthog<3.0.0
+sentence-transformers==3.3.1
+langchain-text-splitters==0.3.4
+prometheus-client==0.26.0
+pyyaml==6.0.2
+# Same major version llm-gateway/eval-service use (v2, module-level
+# Langfuse().trace() API) -- see app/tracing.py. Deliberately NOT the same
+# major version as agent-service's langfuse (4.x, a different API
+# entirely) -- see llm-gateway/requirements.txt's comment.
+langfuse==2.60.10

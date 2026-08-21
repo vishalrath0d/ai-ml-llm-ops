@@ -1,0 +1,35 @@
+# Fragment to be merged into the project's top-level docker-compose.yml
+# (e.g. via `docker compose -f docker-compose.yml -f services/agent-service/compose.fragment.yml`,
+# or simply copy this service block into the root compose file - whichever
+# convention the rest of this hands-on project settles on).
+#
+# Depends on the sibling `llm-gateway` and `rag-service` containers being on
+# the same compose network, reachable at the hostnames baked into the
+# default env vars below.
+agent-service:
+  build:
+    context: ./services/agent-service
+    dockerfile: Dockerfile
+  image: agent-service:local
+  container_name: agent-service
+  ports:
+    - "8003:8003"
+  environment:
+    LLM_GATEWAY_URL: "http://llm-gateway:8001/v1/chat/completions"
+    RAG_SERVICE_URL: "http://rag-service:8002/query"
+    LLM_MODEL: "gpt-4o-mini"
+    MAX_ITERATIONS: "5"
+    # Optional Langfuse tracing - leave unset to no-op.
+    LANGFUSE_HOST: ""
+    LANGFUSE_PUBLIC_KEY: ""
+    LANGFUSE_SECRET_KEY: ""
+  depends_on:
+    - llm-gateway
+    - rag-service
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3).status == 200 else 1)"]
+    interval: 30s
+    timeout: 5s
+    start_period: 10s
+    retries: 3
+  restart: unless-stopped

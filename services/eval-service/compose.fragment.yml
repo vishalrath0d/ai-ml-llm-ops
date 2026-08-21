@@ -1,0 +1,70 @@
+# compose.fragment.yml — eval-service (LLM-as-judge evaluation service)
+#
+# This is a FRAGMENT meant to be merged/included into the project's root
+# docker-compose file (the integration step owns wiring all fragments
+# together into one compose project + shared network), matching the same
+# convention used by services/mlflow/compose.fragment.yml.
+#
+# IMPORTANT — SHARED POSTGRES DEPENDENCY (do not duplicate here):
+#   eval-service persists to Postgres via DATABASE_URL
+#   (postgresql://aiops:aiops@postgres:5432/eval_db) and needs a database
+#   named `eval_db` to exist on the SHARED `postgres` service used across
+#   this project (the same instance mlflow points its own `mlflow_db` at).
+#   That means:
+#     1. A `postgres` service must exist in the merged compose file,
+#        reachable at hostname `postgres` on port 5432, with a superuser/app
+#        user `aiops` / password `aiops` (adjust to match whatever the
+#        integration step actually provisions).
+#     2. A database literally named `eval_db` must be created on that
+#        Postgres instance before eval-service can start successfully (e.g.
+#        via a docker-entrypoint-initdb.d init script, or
+#        `CREATE DATABASE eval_db;`). See ./init_db.sql in this folder for
+#        the table schema eval-service expects inside that database (it is
+#        also created automatically by the app itself on startup via
+#        SQLAlchemy create_all(), so the init script only needs to create the
+#        DATABASE, not the tables).
+#   The `postgres` container itself, its credentials/volume, and any init
+#   script that provisions `eval_db` are OWNED BY the observability/mlops
+#   integration step, NOT by this fragment. Do not add another `postgres:`
+#   service block to the merged compose file — that would start a second,
+#   conflicting container. For reference only, here is a sketch of what
+#   eval-service needs from that shared postgres service (commented out,
+#   not an active service definition):
+#
+# services:
+#   postgres:
+#     image: postgres:16
+#     environment:
+#       POSTGRES_USER: aiops
+#       POSTGRES_PASSWORD: aiops
+#       # must also provision a database named `eval_db` (in addition to
+#       # whatever other databases sibling services need, e.g. mlflow_db),
+#       # e.g. via a docker-entrypoint-initdb.d script.
+#     ports:
+#       - "5432:5432"
+#     volumes:
+#       - postgres-data:/var/lib/postgresql/data
+
+services:
+  eval-service:
+    build:
+      context: ./services/eval-service
+      dockerfile: Dockerfile
+    image: aiops-eval-service:local
+    container_name: eval-service
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: postgresql://aiops:aiops@postgres:5432/eval_db
+      AGENT_SERVICE_URL: http://agent-service:8003
+      LLM_GATEWAY_URL: http://llm-gateway:8001
+      JUDGE_MODEL: gpt-4o-mini
+      SEED_ON_STARTUP: "true"
+    # Uncomment once the shared postgres service (+ eval_db database) and the
+    # sibling agent-service / llm-gateway containers exist in the merged
+    # compose file:
+    # depends_on:
+    #   - postgres
+    #   - agent-service
+    #   - llm-gateway
+    restart: unless-stopped

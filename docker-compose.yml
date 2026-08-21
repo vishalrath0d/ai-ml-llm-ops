@@ -1,0 +1,699 @@
+# =============================================================================
+# AI/ML/LLM Ops — hands-on local project — root docker-compose.yml
+# =============================================================================
+# This is the INTEGRATION file that assembles the individually-built service
+# fragments (services/*/compose.fragment.yml) into one runnable stack. Each
+# fragment's own comments explain the design rationale for that piece; this
+# file just wires them together, resolves the one real port collision that
+# showed up when merging (Prometheus vs. Langfuse's MinIO, both originally
+# on host port 9090), and adds the two pieces of genuinely shared
+# infrastructure (the `postgres` instance used by eval-service + mlflow, and
+# the docker-entrypoint-initdb.d script that provisions their databases).
+#
+# See README.md in this folder for the full walkthrough, port map, and
+# "what to try first" exercises tied back to docs/concepts/.
+# =============================================================================
+
+# Pinned explicitly so the Compose project name (and therefore container
+# network name, e.g. `ai-ml-llm-ops_default`) stays stable regardless of
+# what directory this file happens to be run from -- without this, Compose
+# derives the project name from the containing folder, which broke a
+# hardcoded network reference in services/mlflow/run_training.sh the one
+# time this repo's layout changed.
+name: ai-ml-llm-ops
+
+# Shared log-rotation cap, applied to every service below via YAML's
+# merge key (<<: *default-logging) -- docker-compose's default json-file
+# log driver has NO size cap at all, so a long-running dev/staging
+# environment accumulates unbounded log files on the host indefinitely.
+# 3 files x 10MB = 30MB ceiling per container, plenty for interactive use
+# without ever needing manual log cleanup.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Core AI services
+  # ---------------------------------------------------------------------------
+  llm-gateway:
+    build:
+      context: ./services/llm-gateway
+      dockerfile: Dockerfile
+    image: llm-gateway:latest
+    container_name: llm-gateway
+    ports:
+      - "8001:8001"
+    environment:
+      # Ordered fallback chain -- Gemini first (generous free tier, largest
+      # context window), then OpenAI, then Anthropic, then Ollama last as
+      # the always-available, no-API-key-required local backstop. A
+      # provider with no key configured just fails fast (401) and falls
+      # through to the next one -- see services/llm-gateway/app/main.py.
+      LLM_PROVIDER_CHAIN: ${LLM_PROVIDER_CHAIN:-gemini,openai,anthropic,ollama}
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:0.5b}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      # See docs/environments.md for the full story -- ENVIRONMENT defaults
+      # to dev, which is the only environment where CORS defaults to "*"
+      # and auth defaults to off. RATE_LIMIT_PER_MINUTE applies regardless
+      # of environment (see app/rate_limit.py).
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      API_KEY: ${API_KEY:-}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      CHAOS_LATENCY_MS: "0"
+      CHAOS_ERROR_RATE: "0.0"
+      # Defaults match langfuse-web's LANGFUSE_INIT_* headless-init values
+      # below, so tracing works immediately once `--profile langfuse` is up
+      # -- zero manual UI setup. Safe to leave set even when the langfuse
+      # profile ISN'T running: both SDKs batch/export in the background and
+      # never block a request on an unreachable host (verified directly --
+      # see README.md's "Verified" section).
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002}
+    # depends_on: [ollama] -- commented out deliberately. With Gemini/OpenAI/
+    # Anthropic now real options in LLM_PROVIDER_CHAIN, ollama is no longer a
+    # hard requirement for llm-gateway to be useful, and this dependency was
+    # forcing `docker compose up llm-gateway` to always start (and keep
+    # restarting) ollama even when you explicitly want to run without it
+    # (e.g. LLM_PROVIDER_CHAIN=gemini, testing hosted-provider-only). Restore
+    # this if you go back to relying on ollama as a real fallback target.
+    # depends_on:
+    #   - ollama
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  # The service definition itself stays active (only llm-gateway's
+  # depends_on above is commented out) -- "docker compose up -d" still
+  # brings this up by default, and it's still available for the zero-cost
+  # local-model path documented in README.md's "Sharing this with your
+  # team" section (`docker compose exec ollama ollama pull qwen2.5:0.5b`).
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  rag-service:
+    build:
+      context: ./services/rag-service
+      dockerfile: Dockerfile
+    image: hands-on-project/rag-service:latest
+    container_name: rag-service
+    ports:
+      - "8002:8002"
+    environment:
+      CHROMA_PERSIST_DIR: /data/chroma
+      EMBEDDING_MODEL_NAME: all-MiniLM-L6-v2
+      AUTO_SEED_ON_STARTUP: "true"
+      # The embedding model is already baked into the image at build time
+      # (see Dockerfile's builder stage) -- without this, sentence-transformers
+      # still does a HEAD request to huggingface.co on every process's first
+      # embed call to check for a newer version. In an offline/no-internet
+      # container that hangs through several retries with backoff (~30-80s)
+      # before falling back to the local cache -- found live, made every
+      # first /query after a restart feel broken. This skips that check
+      # entirely since there's never a newer version to fetch anyway.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      # Belt-and-suspenders alongside the Settings(anonymized_telemetry=False)
+      # passed in app/store.py -- that alone did NOT suppress chromadb
+      # 0.5.23's posthog telemetry errors in testing (its telemetry client
+      # appears to init from this env var independently of the per-client
+      # Settings override in this version). This env var is the one that
+      # actually silenced it.
+      ANONYMIZED_TELEMETRY: "False"
+      # Same fixed local Langfuse keypair every other traced service in this
+      # project uses -- see agent-service's comment below for why these
+      # defaults are safe to leave set even if Langfuse isn't running.
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002}
+      # See docs/environments.md -- dev is the only environment where CORS
+      # defaults to "*" and auth defaults to off.
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      API_KEY: ${API_KEY:-}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-}
+    volumes:
+      - rag_chroma_data:/data/chroma
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  feature-store:
+    build:
+      context: ./services/feature-store
+      dockerfile: Dockerfile
+    image: feature-store:local
+    container_name: feature-store
+    ports:
+      - "6566:6566"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6566/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  agent-service:
+    build:
+      context: ./services/agent-service
+      dockerfile: Dockerfile
+    image: agent-service:local
+    container_name: agent-service
+    ports:
+      - "8003:8003"
+    environment:
+      LLM_GATEWAY_URL: "http://llm-gateway:8001/v1/chat/completions"
+      RAG_SERVICE_URL: "http://rag-service:8002/query"
+      # Feast's online feature store, served over HTTP -- see
+      # app/feature_store_client.py. Soft dependency only (depends_on below
+      # is service_started, not health-gated): classify_urgency() degrades
+      # to neutral default features if this isn't reachable yet, it must
+      # never block /chat or startup.
+      FEATURE_STORE_URL: "http://feature-store:6566"
+      LLM_MODEL: "gpt-4o-mini"
+      MAX_ITERATIONS: "5"
+      # 30s default is fine against a real hosted API; CPU-only local Ollama
+      # inference on a memory-constrained VM can take 60-100s+ per call, so
+      # this needs real headroom whenever the chain falls through to Ollama (see docker-compose
+      # README troubleshooting section).
+      LLM_REQUEST_TIMEOUT_SECONDS: "180"
+      # Defaults match langfuse-web's LANGFUSE_INIT_* headless-init values
+      # below, so tracing works immediately once `--profile langfuse` is up
+      # -- zero manual UI setup. Safe to leave set even when the langfuse
+      # profile ISN'T running: both SDKs batch/export in the background and
+      # never block a request on an unreachable host (verified directly --
+      # see README.md's "Verified" section).
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002}
+      # Live MLflow model registry consultation -- see app/model_registry.py.
+      # This is the real, observable MLOps integration: agent-service asks
+      # MLflow for whichever version is tagged `champion`, never a hardcoded
+      # version. Soft dependency only (depends_on below is service_started,
+      # not health-gated) -- classify_urgency() degrades to "unknown" if
+      # MLflow isn't reachable yet or nothing's been registered, it must
+      # never block /chat or startup.
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
+      URGENCY_MODEL_NAME: "support-urgency-classifier"
+      URGENCY_MODEL_ALIAS: "champion"
+      MODEL_REFRESH_SECONDS: "60"
+      # See docs/environments.md -- dev is the only environment where CORS
+      # defaults to "*" and auth defaults to off.
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      API_KEY: ${API_KEY:-}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-}
+    depends_on:
+      - llm-gateway
+      - rag-service
+      - mlflow
+      - feature-store
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  eval-service:
+    build:
+      context: ./services/eval-service
+      dockerfile: Dockerfile
+    image: aiops-eval-service:local
+    container_name: eval-service
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: postgresql://aiops:aiops@postgres:5432/eval_db
+      AGENT_SERVICE_URL: http://agent-service:8003
+      LLM_GATEWAY_URL: http://llm-gateway:8001
+      JUDGE_MODEL: gpt-4o-mini
+      SEED_ON_STARTUP: "true"
+      # Wraps a full agent-service conversation turn (which itself can take
+      # 60-100s+ when the chain falls through to Ollama on constrained hardware) plus a
+      # separate judge call -- 30s default is too short for that chain here.
+      HTTP_TIMEOUT_SECONDS: "240"
+      # Same fixed local Langfuse keypair every other traced service in this
+      # project uses -- see agent-service's comment above for why these
+      # defaults are safe to leave set even if Langfuse isn't running.
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002}
+      # See docs/environments.md -- dev is the only environment where CORS
+      # defaults to "*" and auth defaults to off.
+      ENVIRONMENT: ${ENVIRONMENT:-dev}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      API_KEY: ${API_KEY:-}
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      agent-service:
+        condition: service_started
+      llm-gateway:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Web UI — interactive control panel over the 4 app services above.
+  # ---------------------------------------------------------------------------
+  web-ui:
+    build:
+      context: ./services/web-ui
+      dockerfile: Dockerfile
+    image: web-ui:local
+    container_name: web-ui
+    ports:
+      - "8090:8080"
+    depends_on:
+      - llm-gateway
+      - rag-service
+      - agent-service
+      - eval-service
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Shared Postgres — used by eval-service (eval_db) and mlflow (mlflow_db).
+  # NOT used by Langfuse, which gets its own dedicated `langfuse-db` below.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: aiops
+      POSTGRES_DB: aiops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # MLOps — MLflow tracking server + model registry (baseline/rollback demo)
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow
+    ports:
+      # Host 5050, not 5000: macOS's built-in AirPlay Receiver squats on 5000.
+      - "5050:5000"
+    # --workers 1: this uvicorn-based mlflow (3.15.1) defaults to 4 API
+    # worker processes, each loading the full mlflow/pandas/sklearn stack
+    # independently. One worker is plenty for a local single-user demo.
+    #
+    # MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false: separately from --workers,
+    # mlflow's async job-execution subsystem (for things like registry
+    # webhooks and scheduled deployment jobs -- irrelevant to this project's
+    # baseline/rollback exercise) spawns SEVEN additional `huey` background
+    # consumer processes with ~47 combined worker slots, regardless of
+    # --workers. This was the real driver of mlflow's ~1.5-1.6GB idle memory
+    # footprint observed during verification, not the API server itself.
+    # Disabling it is the fix that actually matters; --workers 1 alone only
+    # capped the smaller half of the problem.
+    environment:
+      MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
+    # --artifacts-destination (NOT --default-artifact-root): this is what
+    # actually matters for train_and_log.py (run from your HOST machine,
+    # outside docker) to work at all. --default-artifact-root with a plain
+    # filesystem path hands clients a raw `/mlartifacts` path and expects
+    # them to have that same filesystem mounted -- which a host-run script
+    # never does, and which failed with a real
+    # "OSError: [Errno 30] Read-only file system: '/mlartifacts'" during
+    # verification. --artifacts-destination keeps MLflow's default proxied-
+    # artifact mode (--serve-artifacts, on by default) intact: the server
+    # hands out `mlflow-artifacts:/...` URIs and streams uploads/downloads
+    # through its own REST API, so a remote client needs zero filesystem
+    # access to the volume below -- only network access to the server.
+    # --allowed-hosts '*': mlflow 3.x validates the incoming Host header to
+    # prevent DNS-rebinding attacks, and by default only allows "localhost"
+    # + raw private-IP literals -- NOT docker-compose service hostnames like
+    # "mlflow". agent-service's requests to http://mlflow:5000 were rejected
+    # outright with 403 "Invalid Host header - possible DNS rebinding attack
+    # detected" until this was added (found during verification). '*' is
+    # explicitly documented by mlflow as "not recommended for production" --
+    # fine as the DEFAULT here because this stack starts out never leaving
+    # your machine, but that stops being true the moment mlflow exists in a
+    # real staging/prod environment (see docs/environments.md) -- so this is now
+    # env-var-driven, not a hardcoded "*", with a real allowlist expected
+    # once MLFLOW_ALLOWED_HOSTS is actually set for a non-dev environment.
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://aiops:aiops@postgres:5432/mlflow_db
+      --artifacts-destination /mlartifacts
+      --host 0.0.0.0
+      --workers 1
+      --allowed-hosts "${MLFLOW_ALLOWED_HOSTS:-*}"
+    volumes:
+      - mlflow_artifacts:/mlartifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  # One-shot job: seeds a real, trained `support-urgency-classifier` into
+  # MLflow's registry on the very first `docker compose up --build` on ANY
+  # machine (yours or a teammate's) -- see entrypoint.sh for the full
+  # rationale. Idempotent (skips training once a model already exists in
+  # the persisted mlflow_artifacts/postgres_data volumes), so it's safe to
+  # leave running on every startup, not just the first one. agent-service
+  # never blocks on this -- it already degrades to "unknown" urgency until
+  # a model exists, the same soft-dependency posture it has toward mlflow
+  # generally (see agent-service's own environment block above).
+  mlflow-training:
+    build:
+      context: ./services/mlflow
+      dockerfile: Dockerfile
+    image: mlflow-training:local
+    container_name: mlflow-training
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - mlflow
+    restart: "no"
+    logging:
+      <<: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Langfuse v3 self-hosted (LLM tracing) — mirrors a common production
+  # self-hosted Langfuse deployment architecturally: web + worker +
+  # Postgres + ClickHouse + Redis + S3-compatible storage (minio locally).
+  # ---------------------------------------------------------------------------
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://langfuse:MieZDJ4EybnuwyCZnvJ58Q@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: "7v1JBMsXAwhVnaYLW4uBemeH_sw-_OTaR9cXCHlOA0A" # FAKE - local dev only
+      SALT: "TRinQygfcG69uRNADKv-tlEZHRYwNlQi5IPJEiitl7Q"           # FAKE - local dev only
+      ENCRYPTION_KEY: "6233ac1afd557f6fe6037be9136c2c4214ad1e7173db045e10ddb2769f0a8131" # FAKE, 64 hex chars
+      # Disabled: this is Langfuse's own product-usage telemetry to PostHog
+      # (unrelated to trace storage, which stays local in Postgres/ClickHouse
+      # either way) -- found erroring noisily whenever container egress to
+      # the internet is unavailable, which this offline-first local stack
+      # can't always guarantee.
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      # Headless initialization (https://langfuse.com/self-hosting/administration/headless-initialization):
+      # auto-creates an org/project/user/API-keypair on first boot so tracing
+      # works immediately with zero manual UI setup -- sign up, click through
+      # a project wizard, generate keys, then copy them into .env is exactly
+      # the friction this eliminates. These are the SAME fixed values wired
+      # into llm-gateway/agent-service's LANGFUSE_PUBLIC_KEY/SECRET_KEY below,
+      # so tracing "just works" the moment `--profile langfuse` is up.
+      # Do NOT quote these values (Langfuse's own docs warn quoting breaks
+      # this) and never reuse these fake keys/password anywhere but here.
+      LANGFUSE_INIT_ORG_ID: aiops-local
+      LANGFUSE_INIT_ORG_NAME: AI Ops Local
+      LANGFUSE_INIT_PROJECT_ID: aiops-handson
+      LANGFUSE_INIT_PROJECT_NAME: aiops-hands-on-project
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000001
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-a1b2c3d4-e5f6-4a1b-8c2d-000000000002
+      LANGFUSE_INIT_USER_EMAIL: admin@aiops.local
+      LANGFUSE_INIT_USER_NAME: Local Admin
+      LANGFUSE_INIT_USER_PASSWORD: localdev12345
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "FlZGLEKkyRiNlyqrLl9tnw" # FAKE - local dev only
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "EDSXl037U-MWUqXeT-7sRQ" # FAKE - local dev only
+      REDIS_TLS_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw" # FAKE - local dev only
+      # Media URLs served back to a browser need the *externally* reachable
+      # minio endpoint (host-mapped port, see langfuse-minio below), not the
+      # internal docker hostname.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9190
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    ports:
+      - "3030:3030"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://langfuse:MieZDJ4EybnuwyCZnvJ58Q@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: "TRinQygfcG69uRNADKv-tlEZHRYwNlQi5IPJEiitl7Q"
+      ENCRYPTION_KEY: "6233ac1afd557f6fe6037be9136c2c4214ad1e7173db045e10ddb2769f0a8131"
+      # Disabled: this is Langfuse's own product-usage telemetry to PostHog
+      # (unrelated to trace storage, which stays local in Postgres/ClickHouse
+      # either way) -- found erroring noisily whenever container egress to
+      # the internet is unavailable, which this offline-first local stack
+      # can't always guarantee.
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "FlZGLEKkyRiNlyqrLl9tnw"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "EDSXl037U-MWUqXeT-7sRQ"
+      REDIS_TLS_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "sPSzqRzqorODt4IoKZnKcw"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  langfuse-db:
+    image: postgres:16
+    container_name: langfuse-db
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: "MieZDJ4EybnuwyCZnvJ58Q"
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: langfuse-clickhouse
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "FlZGLEKkyRiNlyqrLl9tnw"
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "-", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    command: ["redis-server", "--requirepass", "EDSXl037U-MWUqXeT-7sRQ"]
+    ports:
+      - "6380:6379" # host 6380 to avoid clashing with any other local redis on 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "EDSXl037U-MWUqXeT-7sRQ", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  langfuse-minio:
+    image: minio/minio
+    container_name: langfuse-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: "sPSzqRzqorODt4IoKZnKcw"
+    ports:
+      # NOTE: remapped from the fragment's original 9090/9091 -> 9190/9191
+      # during integration. Prometheus (below) also wanted host port 9090;
+      # Prometheus's default is far more commonly assumed/documented, so
+      # MinIO moved instead.
+      - "9190:9000" # S3 API
+      - "9191:9001" # web console
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  langfuse-minio-init:
+    image: minio/mc
+    container_name: langfuse-minio-init
+    depends_on:
+      langfuse-minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set localminio http://langfuse-minio:9000 minio sPSzqRzqorODt4IoKZnKcw &&
+      mc mb --ignore-existing localminio/langfuse
+      "
+    restart: "no"
+    logging:
+      <<: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Observability — Prometheus + Grafana, scraping the 4 app services above.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./services/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - llm-gateway
+      - rag-service
+      - agent-service
+      - eval-service
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3001:3000" # host 3001 -- container still listens on its default 3000 internally
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./services/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./services/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    logging:
+      <<: *default-logging
+
+volumes:
+  ollama_data:
+  rag_chroma_data:
+  postgres_data:
+  mlflow_artifacts:
+  langfuse_db_data:
+  langfuse_clickhouse_data:
+  langfuse_minio_data:
+  prometheus_data:
+  grafana_data:

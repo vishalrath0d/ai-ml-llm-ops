@@ -1,0 +1,29 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+pydantic==2.13.4
+httpx==0.28.1
+langgraph==1.2.11
+langchain-core==1.5.5
+langchain-openai==1.5.1
+mcp==2.0.0
+langfuse==4.14.4
+prometheus-client==0.26.0
+# mlflow-skinny (not the full `mlflow` package): agent-service only needs
+# mlflow.pyfunc.load_model() against a registry alias, not the tracking
+# server's own flask/gunicorn/alembic stack that the full package pulls in.
+# Exact pin, matching ../mlflow/requirements.txt's mlflow pin exactly (both
+# for the client/server major-version-drift reason below, AND because these
+# two files' scikit-learn/pandas pins are the train/serve boundary --
+# see that file's comment for the real version-skew bug this fixes).
+# 3.x, not 2.x, to match the running server image (ghcr.io/mlflow/
+# mlflow:latest resolved to 3.15.1 during verification) -- a 2.x client
+# against a 3.x server risks API drift (e.g. pyfunc model-loading
+# internals changed between majors), found and fixed during this
+# project's own testing.
+mlflow-skinny==3.15.1
+scikit-learn==1.7.0
+# mlflow.pyfunc's internal input-schema handling needs pandas even for a
+# plain list-of-strings input -- found via a real
+# "Could not load ... (No module named 'pandas')" failure during
+# verification, not a documented hard requirement of mlflow-skinny itself.
+pandas==2.3.2

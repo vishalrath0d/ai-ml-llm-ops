@@ -1,0 +1,26 @@
+# Exact pins, not ranges -- standardized across this project's services
+# (agent-service was already fully exact-pinned; this file and eval-
+# service's were the ones still using loose ranges). A loose range means
+# two builds of the same service, days apart, can silently resolve
+# different versions -- exactly the class of bug that caused a real,
+# observed scikit-learn train/serve mismatch elsewhere in this project
+# (see services/mlflow/requirements.txt's comment). fastapi/uvicorn/
+# pydantic/httpx/prometheus-client pinned to the SAME exact versions
+# agent-service already uses, since those are shared, not
+# service-specific, dependencies.
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+pydantic==2.13.4
+httpx==0.28.1
+openai==1.109.1
+anthropic==0.125.0
+google-genai==1.75.0
+prometheus-client==0.26.0
+# v2.x, module-level Langfuse().trace() API -- see app/tracing.py.
+# Deliberately NOT the same major version as agent-service's langfuse
+# (which is pinned to 4.x, the newer OTel-based client with a different
+# API entirely -- see agent-service/app/tracing.py's own docstring). This
+# is an intentional split, not a version drift to "fix" into alignment:
+# this service's tracing.py is written against the v2 API and would break
+# on v4.
+langfuse==2.60.10

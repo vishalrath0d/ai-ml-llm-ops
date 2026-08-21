@@ -1,0 +1,48 @@
+# Offline build variant -- see llm-gateway/Dockerfile.offline for why this
+# exists and scripts/offline-up.sh for how it's driven.
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+COPY _offline_wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels torch \
+    && pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
+
+# Pre-downloaded on the host by scripts/offline-up.sh instead of fetched
+# live -- reproduces exactly what
+# `python -c "from sentence_transformers import SentenceTransformer('all-MiniLM-L6-v2')"`
+# would have populated at this same path.
+COPY _offline_hf_cache /root/.cache/huggingface/hub
+
+FROM python:3.11-slim AS runtime
+
+RUN groupadd --system app && useradd --system --gid app --home-dir /app --create-home app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /root/.cache /home/app/.cache
+
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    CHROMA_PERSIST_DIR=/data/chroma \
+    HF_HOME=/home/app/.cache/huggingface
+
+WORKDIR /app
+
+COPY app ./app
+COPY seed.py keyword_triggers.yaml ./
+
+RUN mkdir -p /data/chroma \
+    && chown -R app:app /app /data /home/app/.cache
+
+USER app
+
+EXPOSE 8002
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)" || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

@@ -1,0 +1,58 @@
+# Hand-curated keyword -> doc_id routing table for hybrid retrieval.
+#
+# This is the actual mechanism behind a real internal data-engineering Slack
+# bot's "hybrid" mode: a handful of high-confidence, high-frequency query
+# patterns are routed directly to the right document instead of relying on a
+# nearest-neighbor vector search, which is cheaper and more precise for cases
+# the team already knows about. Everything else falls through to semantic
+# search.
+#
+# Matching is a case-insensitive substring check against the raw query text
+# (see app/retrieval.py::match_keyword_trigger) — first match wins, so keep
+# keywords reasonably specific.
+triggers:
+  "forgot password": doc_login_troubleshooting
+  "forgot my password": doc_login_troubleshooting
+  "password reset": doc_login_troubleshooting
+  "reset my password": doc_login_troubleshooting
+  "locked out": doc_login_troubleshooting
+  "can't log in": doc_login_troubleshooting
+  "cannot log in": doc_login_troubleshooting
+
+  billing: doc_billing
+  invoice: doc_billing
+  refund: doc_billing
+  "change plan": doc_billing
+  "payment failed": doc_billing
+
+  "export data": doc_data_export
+  "csv export": doc_data_export
+  "download my data": doc_data_export
+  "gdpr": doc_data_export
+
+  "slack integration": doc_integrations
+  zapier: doc_integrations
+  "connect slack": doc_integrations
+  "email forwarding": doc_integrations
+
+  "team roles": doc_roles_permissions
+  permissions: doc_roles_permissions
+  "admin role": doc_roles_permissions
+  "transfer ownership": doc_roles_permissions
+
+  "notification settings": doc_notifications
+  "email digest": doc_notifications
+  "pause notifications": doc_notifications
+
+  "api key": doc_api_tickets
+  "rate limit": doc_api_tickets
+  webhook: doc_api_tickets
+  "rest api": doc_api_tickets
+
+  "getting started": doc_getting_started
+  onboarding: doc_getting_started
+
+  "two-factor": doc_two_factor_auth
+  "two factor": doc_two_factor_auth
+  "2fa": doc_two_factor_auth
+  "authenticator app": doc_two_factor_auth

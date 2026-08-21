@@ -1,0 +1,29 @@
+# Real secrets live here (API keys, etc.) -- never commit this. The
+# tracked template is .env.example, which stays all-blank on purpose.
+# Found genuinely committed with blank values (no real secret leaked, since
+# no commit ever contained a real key) but tracked at all was already the
+# wrong pattern -- fixed by untracking it, not just adding this rule going
+# forward.
+.env
+
+# Internal-only material: real-company recon, pre-sanitization originals,
+# and anything else that must never leave this machine. Nothing in here is
+# deleted, it's just excluded from what gets published/pushed.
+/internal/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+# services/*/README.md's documented local-test setup (`python3 -m venv .venv`)
+# creates this in-place -- never meant to be committed.
+.venv/
+
+# Wheels/model caches scripts/offline-up.sh downloads on the host and
+# cleans up itself -- not meant to live in the repo even transiently.
+_offline_wheels/
+_offline_hf_cache/
+
+# OS noise
+.DS_Store

@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI/ML/LLM Ops — Control Panel</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%A7%AA</text></svg>" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <div>
+      <h1>AI/ML/LLM Ops — Control Panel</h1>
+      <p class="sub">One page over llm-gateway, rag-service, agent-service &amp; eval-service — see <code>README.md</code></p>
+    </div>
+  </div>
+  <div id="health-strip" class="health-strip"></div>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="chat">Chat</button>
+  <button class="tab-btn" data-tab="kb">Knowledge Base</button>
+  <button class="tab-btn" data-tab="evals">Evaluations</button>
+  <button class="tab-btn" data-tab="gateway">Gateway &amp; Chaos</button>
+  <button class="tab-btn" data-tab="links">Links</button>
+</nav>
+
+<main>
+  <!-- ===================== CHAT TAB ===================== -->
+  <section id="tab-chat" class="tab-panel active">
+    <div class="panel-intro">
+      Talks to <code>agent-service</code> (<code>POST /chat</code>) — a LangGraph agent that can call a
+      <code>search_knowledge_base</code> tool (→ rag-service) and a mocked <code>crm_lookup</code> tool.
+      Watch the "Tool calls this turn" panel to see which tools actually fired.
+    </div>
+    <div class="chat-layout">
+      <div class="chat-main">
+        <div id="chat-transcript" class="transcript" aria-live="polite"></div>
+        <form id="chat-form" class="input-row">
+          <input id="chat-session" type="text" value="ui-session-1" title="session_id" class="session-input" />
+          <input id="chat-customer-id" type="text" placeholder="customer_id (optional) e.g. cust_002" title="customer_id — feeds live Feast features into the urgency classifier" class="session-input" />
+          <input id="chat-message" type="text" placeholder="Type a message… e.g. 'how do I reset my password'" autocomplete="off" required />
+          <button type="submit" id="chat-send">Send</button>
+        </form>
+        <p class="hint">CPU-only local inference can take 30-180s per reply on modest hardware — that's expected, not a bug. A timer runs while waiting.</p>
+        <p class="hint">Try the same message with <code>customer_id</code> set to <code>cust_002</code> (healthy: high engagement, 0 open tickets) vs <code>cust_003</code> (at-risk: low engagement, 3 open tickets) — the urgency label can flip even though the text is identical. See <code>services/feature-store/README.md</code>.</p>
+      </div>
+      <aside class="chat-side">
+        <h3>Tool calls this turn</h3>
+        <div id="chat-tools" class="tool-calls">none yet</div>
+        <h3 style="margin-top:18px">Live MLflow classification</h3>
+        <div id="chat-urgency" class="tool-calls">none yet</div>
+        <p class="hint">The <code>urgency</code> label + model version come from whichever
+          version is tagged <code>champion</code> in MLflow's registry right now — see
+          <code>services/mlflow/README.md</code>. Flip the alias and reload
+          (<code>POST /admin/reload-model</code>) to watch this change live.</p>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===================== KNOWLEDGE BASE TAB ===================== -->
+  <section id="tab-kb" class="tab-panel">
+    <div class="panel-intro">
+      Talks to <code>rag-service</code>. Ingest adds a document to the persistent Chroma store; Query lets you
+      compare <strong>naive</strong> (always semantic) vs <strong>hybrid</strong> (keyword-trigger first, semantic fallback)
+      retrieval on the same question — watch <code>retrieval_path</code> change.
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Ingest a document</h3>
+        <form id="ingest-form">
+          <label>Source label <input id="ingest-source" type="text" placeholder="e.g. manual-test" /></label>
+          <label>Text
+            <textarea id="ingest-text" rows="5" placeholder="Paste some knowledge-base content…" required></textarea>
+          </label>
+          <button type="submit">Ingest</button>
+        </form>
+        <div id="ingest-result" class="result-box"></div>
+      </div>
+      <div class="card">
+        <h3>Query</h3>
+        <form id="query-form">
+          <label>Question <input id="query-text" type="text" placeholder="how do I reset my password" required /></label>
+          <label>Mode
+            <select id="query-mode">
+              <option value="hybrid">hybrid (keyword trigger → semantic fallback)</option>
+              <option value="naive">naive (always semantic)</option>
+            </select>
+          </label>
+          <label>k <input id="query-k" type="number" min="1" max="10" value="3" /></label>
+          <button type="submit">Query</button>
+        </form>
+        <div id="query-result" class="result-box"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== EVALS TAB ===================== -->
+  <section id="tab-evals" class="tab-panel">
+    <div class="panel-intro">
+      Talks to <code>eval-service</code>. Each scenario drives a real conversation against <code>agent-service</code>,
+      then an LLM judge (via <code>llm-gateway</code>) scores it against <code>success_criteria</code> — semantic
+      pass/fail, not exact string matching. Running a scenario can take 1-3+ minutes on CPU-only local inference.
+    </div>
+    <div class="evals-toolbar">
+      <button id="evals-refresh">Refresh scenarios</button>
+      <button id="evals-run-all" class="danger">Run ALL scenarios (slow!)</button>
+      <span id="evals-status" class="hint"></span>
+    </div>
+    <div id="scenarios-list" class="scenarios-list"></div>
+    <div class="card">
+      <h3>Live metrics (from <code>/metrics</code>)</h3>
+      <div id="evals-metrics" class="metrics-box">click "Refresh scenarios" to load</div>
+    </div>
+  </section>
+
+  <!-- ===================== GATEWAY / CHAOS TAB ===================== -->
+  <section id="tab-gateway" class="tab-panel">
+    <div class="panel-intro">
+      Talks directly to <code>llm-gateway</code>. Use this to test the raw provider (Ollama/OpenAI/Anthropic) without
+      going through the agent, and to inject chaos (latency/errors) live — then go watch Grafana or a Chat/Eval
+      request feel it.
+    </div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Raw chat completion</h3>
+        <form id="raw-chat-form">
+          <label>Model <input id="raw-model" type="text" value="qwen2.5:0.5b" /></label>
+          <label>Message <textarea id="raw-message" rows="3" required>Say hello in five words.</textarea></label>
+          <button type="submit">Send</button>
+        </form>
+        <div id="raw-chat-result" class="result-box"></div>
+      </div>
+      <div class="card">
+        <h3>Chaos controls</h3>
+        <form id="chaos-form">
+          <label>Latency (ms) <input id="chaos-latency" type="number" min="0" step="500" value="0" /></label>
+          <label>Error rate (0.0 - 1.0) <input id="chaos-error" type="number" min="0" max="1" step="0.1" value="0" /></label>
+          <div class="btn-row">
+            <button type="submit">Apply</button>
+            <button type="button" id="chaos-reset">Reset to 0</button>
+            <button type="button" id="chaos-refresh">Refresh current</button>
+          </div>
+        </form>
+        <div id="chaos-result" class="result-box"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== LINKS TAB ===================== -->
+  <section id="tab-links" class="tab-panel">
+    <div class="panel-intro">Third-party UIs already have their own interfaces — no point rebuilding them here.</div>
+    <div class="links-grid">
+      <a class="link-card" href="http://localhost:3001" target="_blank" rel="noopener">
+        <strong>Grafana</strong><span>Metrics dashboards (admin/admin)</span>
+      </a>
+      <a class="link-card" href="http://localhost:3000" target="_blank" rel="noopener">
+        <strong>Langfuse</strong><span>LLM traces (sign up locally)</span>
+      </a>
+      <a class="link-card" href="http://localhost:5050" target="_blank" rel="noopener">
+        <strong>MLflow</strong><span>Experiment tracking &amp; model registry</span>
+      </a>
+      <a class="link-card" href="http://localhost:9090" target="_blank" rel="noopener">
+        <strong>Prometheus</strong><span>Raw metrics / PromQL</span>
+      </a>
+      <a class="link-card" href="http://localhost:8001/docs" target="_blank" rel="noopener">
+        <strong>llm-gateway API docs</strong><span>Swagger UI</span>
+      </a>
+      <a class="link-card" href="http://localhost:8002/docs" target="_blank" rel="noopener">
+        <strong>rag-service API docs</strong><span>Swagger UI</span>
+      </a>
+      <a class="link-card" href="http://localhost:8003/docs" target="_blank" rel="noopener">
+        <strong>agent-service API docs</strong><span>Swagger UI</span>
+      </a>
+      <a class="link-card" href="http://localhost:8004/docs" target="_blank" rel="noopener">
+        <strong>eval-service API docs</strong><span>Swagger UI</span>
+      </a>
+    </div>
+  </section>
+</main>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

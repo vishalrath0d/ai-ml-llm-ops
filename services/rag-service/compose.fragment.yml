@@ -1,0 +1,27 @@
+# Fragment intended to be merged into the top-level project docker-compose
+# file (e.g. `docker compose -f compose.yml -f services/rag-service/compose.fragment.yml up`,
+# or copied into a combined compose.yml alongside sibling services).
+rag-service:
+  build:
+    context: ./services/rag-service
+    dockerfile: Dockerfile
+  image: hands-on-project/rag-service:latest
+  container_name: rag-service
+  ports:
+    - "8002:8002"
+  environment:
+    CHROMA_PERSIST_DIR: /data/chroma
+    EMBEDDING_MODEL_NAME: all-MiniLM-L6-v2
+    AUTO_SEED_ON_STARTUP: "true"
+  volumes:
+    - rag_chroma_data:/data/chroma
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 30s
+  restart: unless-stopped
+
+volumes:
+  rag_chroma_data:
