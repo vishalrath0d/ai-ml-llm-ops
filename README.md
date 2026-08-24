@@ -2,7 +2,7 @@
 
 A runnable local stack that mirrors the shape of a real production conversational-AI system, so you can practice the concepts in [`docs/concepts/`](docs/concepts/) against real, working code instead of reading about them.
 
-Ten services, seven of them built from scratch for this project, three of them real open-source infra (Langfuse, MLflow, Prometheus+Grafana) wired in exactly like a real org would. It runs fully offline and free by default (a small local model via Ollama); flip one env var to point it at a real OpenAI/Anthropic key instead.
+Ten services, seven of them built from scratch for this project, three of them real open-source infra (Langfuse, MLflow, Prometheus+Grafana) wired in exactly like a real org would. It runs fully offline and free by default (a small local model via Ollama); flip one env var to point it at a real OpenAI/Anthropic/Gemini key instead.
 
 ### Contents
 
@@ -13,19 +13,19 @@ Ten services, seven of them built from scratch for this project, three of them r
 - [Persistence](#persistence--what-survives-a-restart-what-doesnt)
 - [Sharing this with your team](#sharing-this-with-your-team)
 - [Port map](#port-map)
-- [Exercises](#exercises-mapped-to-the-concepts-you-asked-about)
+- [Exercises](#exercises-mapped-to-the-concepts)
 - [Verified: a real end-to-end run](#verified-a-real-end-to-end-run)
 - [Known limitations](#known-limitations--honesty-notes)
 - [Tearing down](#tearing-down)
 
 ## Architecture
 
-This is the local system's own topology — every box below is something actually running on your machine right now via `docker compose up`.
+This is the local system's own topology — every box below is something that actually runs, right now, via `docker compose up`.
 
 ```mermaid
 flowchart TB
     subgraph Client["Client layer"]
-        Browser["Your browser"]
+        Browser["Browser"]
         Locust["Locust (load-testing/)\nexternal, not in compose"]
         CI["CI pipeline (.github/workflows/)\nexternal, not in compose"]
         MCPInspector["MCP Inspector\nexternal, not in compose"]
@@ -134,13 +134,13 @@ flowchart TB
 
 ## How it all works
 
-The diagram above shows the *static* map (which boxes exist, which arrows connect them). This section is the *dynamic* story: when a request enters the system, exactly what happens, in what order, touching which piece, until a response comes back out. It'll click faster after you've run something once — see the [Exercises](#exercises-mapped-to-the-concepts-you-asked-about) section below.
+The diagram above shows the *static* map (which boxes exist, which arrows connect them). This section is the *dynamic* story: when a request enters the system, exactly what happens, in what order, touching which piece, until a response comes back out. It'll click faster after you've run something once — see the [Exercises](#exercises-mapped-to-the-concepts) section below.
 
 ### The one-paragraph mental model
 
 Everything in this project is one of four kinds of thing:
 1. **A request handler** (`llm-gateway`, `rag-service`, `agent-service`, `eval-service`, `feature-store`) — a FastAPI (or Feast's own `feast serve`, same shape) service that does one job and calls its neighbors over plain HTTP.
-2. **A brain** (Ollama, or a real OpenAI/Anthropic API) — the thing that actually generates text. Nothing else in the project talks to it directly except `llm-gateway`.
+2. **A brain** (Ollama, or a real OpenAI/Anthropic/Gemini API) — the thing that actually generates text. Nothing else in the project talks to it directly except `llm-gateway`.
 3. **A record-keeper** (Postgres, MLflow, Langfuse, Prometheus) — things that don't participate in answering a request, they just *observe* and *store* what happened, asynchronously, so you can look back later.
 4. **A window** (Grafana, the web UI, MLflow's UI, Langfuse's UI) — things a human looks at. They never sit in a request's critical path.
 
@@ -503,7 +503,7 @@ docker compose up -d --build llm-gateway ollama rag-service agent-service
 
 **Port collision resolved during integration:** the `langfuse` and `observability` pieces were built by separate agents in parallel and both independently chose host port 9090 (Langfuse's MinIO for its S3 API, Prometheus for its UI). MinIO was moved to 9190/9191 since Prometheus's port is the more standard/expected one. If you edit `docker-compose.yml`, watch for this class of conflict — it's the one thing parallel-built compose fragments can't catch on their own.
 
-## Exercises, mapped to the concepts you asked about
+## Exercises, mapped to the concepts
 
 Each of these is meant to be *done*, not just read about — that's the point of this project existing on your machine. Every exercise below can be done either via the **web UI at http://localhost:8090** (click around) or via curl (shown below) — use whichever you prefer.
 
