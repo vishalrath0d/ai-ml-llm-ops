@@ -7,8 +7,8 @@ Ten services, seven of them built from scratch for this project, three of them r
 ### Contents
 
 - [Architecture](#architecture)
-- [CI/CD pipeline architecture, per service](docs/operations/cicd-pipeline-architecture.md) — a third diagram: how each service goes from `git push` to production, including the eval gate and blue-green cutover safety per service
 - [How it all works](#how-it-all-works)
+- [CI/CD: commit to production, per service](#10-cicd-how-each-service-gets-from-commit-to-production)
 - [What mirrors what](#what-mirrors-what)
 - [Quick start](#quick-start)
 - [Persistence](#persistence--what-survives-a-restart-what-doesnt)
@@ -24,6 +24,9 @@ Ten services, seven of them built from scratch for this project, three of them r
 This is the local system's own topology — every box below is something that actually runs, right now, via `docker compose up`.
 
 ```mermaid
+---
+title: AI/ML/LLM Ops — Full System Architecture (LLMOps + MLOps + AIOps in one map)
+---
 flowchart TB
     subgraph Client["Client layer"]
         Browser["Browser"]
@@ -150,6 +153,9 @@ Keep that split in your head — "does this thing help ANSWER the request, or do
 ### 1. Trace a `/chat` request end to end (the LLMOps flow)
 
 ```mermaid
+---
+title: LLMOps Flow — /chat Request Trace
+---
 sequenceDiagram
     participant You as You (curl / web-ui)
     participant Agent as agent-service
@@ -226,6 +232,9 @@ Notice `mlflow` shows up early — that's **not a separate flow**, it's the *sam
 ### 2. Trace an eval run (the AIOps flow — grading the LLMOps flow from outside)
 
 ```mermaid
+---
+title: AIOps Flow — Eval Run (Grading the LLMOps Flow From Outside)
+---
 sequenceDiagram
     participant You as You / CI pipeline
     participant Eval as eval-service
@@ -272,6 +281,9 @@ The short version, if you only remember one line per pattern: **offline eval tes
 ### 4. Trace a model from training to live production traffic (the MLOps flow)
 
 ```mermaid
+---
+title: MLOps Flow — Training to Live Production Traffic
+---
 sequenceDiagram
     participant Dev as You (run_training.sh)
     participant Train as training container (python:3.11-slim)
@@ -380,6 +392,9 @@ If you only remember one sentence from this whole document: **a request flows th
 `services/feature-store/` used to be a standalone `python demo.py` you ran by hand, entirely separate from the live stack — teaching *one specific MLOps failure mode* (train/serve skew) in isolation. It's since become a genuine dependency of a running service: `agent-service`'s urgency classifier now combines message **text** with **live customer-context features** (`engagement_score`, `days_since_last_contact`, `total_conversations`, `open_tickets`) pulled from Feast's online store on every `/chat` turn a `customer_id` is given — the same "urgent"-sounding message can classify differently depending on which customer sent it.
 
 ```mermaid
+---
+title: MLOps Flow — Feature Store (Feast) Live Input
+---
 sequenceDiagram
     participant You as You (curl / web-ui)
     participant Agent as agent-service
@@ -406,6 +421,73 @@ sequenceDiagram
 **Where Feast is served from**: `feature-store` runs Feast's own `feast serve` HTTP API (the same pattern `rag-service`/`llm-gateway` already use — every capability is its own service, not a library agent-service imports in-process). Its registry and online store (SQLite, local provider) are built once, at image build time, from the fixed fake dataset in `feature_repo/data/` — see `services/feature-store/README.md` for the full data story.
 
 **Degrades gracefully, same posture as everything else in this project**: no `customer_id` given, `feature-store` unreachable, or the customer not on file all fall back to neutral `DEFAULT_FEATURES` (see `app/feature_store_client.py`) rather than breaking `/chat` or skewing the classification toward either label.
+
+### 10. CI/CD: how each service gets from commit to production
+
+The diagrams above show two things: the static map (Architecture) and, per request, the dynamic path through it (sections 1-9). Neither shows a third dimension — how code in this repo actually becomes a running, traffic-serving container, per service, from a `git push` to production. This section is that: a direct diagram of the two real, active pipelines in this repo, [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (test/eval-gate half) and [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) (build/staged-rollout half), plus [`sre/blue_green_demo.sh`](sre/blue_green_demo.sh)'s cutover mechanics applied to this project's actual services. See [`ci-cd/README.md`](ci-cd/README.md) for the fuller writeup of why the eval-gate stage exists at all.
+
+```mermaid
+---
+title: Platform CI/CD — Per-Service Pipeline (Commit to Production)
+---
+flowchart TB
+    subgraph PR["On every push / PR — ci.yml"]
+        direction TB
+        MATRIX["Unit-test matrix (parallel, runner's own Python env)\nllm-gateway · agent-service · rag-service · eval-service"]
+        MATRIX --> COMPOSE["docker compose up: postgres, llm-gateway, rag-service,\nagent-service, eval-service (ollama/mlflow/feature-store\ncome up transitively via depends_on)"]
+        COMPOSE --> HEALTH["Wait for /health on all 4 services\n(30 retries x 2s, fail the job if any never comes up)"]
+        HEALTH --> EVALTRIGGER["POST eval-service /scenarios/run-all\n(drives real agent-service conversations\nthrough the real llm-gateway)"]
+        EVALTRIGGER --> EVALGATE{"eval_pass_rate >= 0.8 ?\n(GET /metrics, same shape as a\nfailing pytest run or a coverage drop)"}
+        EVALGATE -->|"no"| FAILPR["Fail the build — merge blocked"]
+        EVALGATE -->|"yes"| PASSPR["PR check passes"]
+    end
+
+    PASSPR -.->|"merge to main, then tag release-*"| RELEASE
+
+    subgraph RELEASE["On a release-* tag — deploy.yml"]
+        direction TB
+        BUILD["Build-and-push matrix (parallel)\nllm-gateway · agent-service · rag-service ·\neval-service · feature-store · web-ui\n(all 6 — wider than the ci.yml test matrix, see note below)"]
+        BUILD --> GHCR[("GitHub Container Registry\nimage tag = git SHA, per service")]
+        GHCR --> DEPLOYSTG["deploy-staging\n(placeholder today — real infra swaps in\naws ecs update-service / kubectl apply / terraform apply)"]
+        DEPLOYSTG --> STGGATE{"Re-run eval gate AGAINST\nthe real staging deployment\n(not a local compose stack this time)"}
+        STGGATE -->|"below 0.8"| BLOCKPROD["Block production deploy"]
+        STGGATE -->|"passes"| APPROVAL["Manual approval gate\n(GitHub Environments required-reviewers\non the 'production' environment)"]
+        APPROVAL --> DEPLOYPROD["deploy-production\n(region-scoped: us / eu / aus,\nchosen at workflow_dispatch)"]
+    end
+
+    DEPLOYPROD --> BLUEGREEN
+
+    subgraph BLUEGREEN["Blue/green cutover (per sre/blue_green_demo.sh's pattern, applied per-service)"]
+        direction TB
+        STANDUP["Stand up GREEN (new SHA) alongside live BLUE\n— both running, GREEN gets zero traffic yet"]
+        STANDUP --> FLIP["Flip the front door (nginx -s reload equivalent,\nor an LB target-group weight change)\nto route new requests to GREEN"]
+        FLIP --> DRAIN{"Does this service hold\nin-flight state across the flip?"}
+        DRAIN -->|"no — llm-gateway, rag-service,\neval-service, feature-store, web-ui"| SAFE["Short drain window is enough —\neach request completes in ms,\nsame case sre/blue_green_demo.sh proves\n(0 dropped requests in its test run)"]
+        DRAIN -->|"yes — agent-service\n(in-process session_id dict)"| RISK["Not automatically safe as-is:\na flip mid-conversation loses that\nsession's history"]
+        SAFE --> RETIRE["Retire BLUE after a soak period"]
+        RISK --> MITIGATE["Needs draining support before this is safe:\nmark BLUE 'not accepting new sessions',\nkeep it serving in-flight sessions until they\nnaturally end, THEN retire — the same\ncall-draining pattern sre/README.md\ndocuments for a stateful voice service"]
+    end
+
+    RETIRE --> OBSERVE["Prometheus scrapes /metrics every 15s on both\nBLUE and GREEN during the overlap window;\nLangfuse traces tag which version answered\neach request — first place a regression shows up"]
+    MITIGATE -.-> OBSERVE
+```
+
+**Per-service notes:**
+
+| Service | Unit-tested in `ci.yml`'s matrix? | Built \& pushed in `deploy.yml`'s matrix? | Blue-green-safe as-is? |
+|---|---|---|---|
+| `llm-gateway` | ✅ (`test_gateway.py`, `test_guardrails.py`, `test_tool_calling_providers.py`) | ✅ | ✅ — stateless per-request |
+| `agent-service` | ✅ (7 test files, incl. `test_graph.py`, `test_mcp_server.py`, `test_online_eval.py`) | ✅ | ⚠️ not automatically — keeps `session_id` conversation history in an in-process dict (see "Known limitations" below). A blue-green flip mid-conversation loses that session's history the same way a plain container restart already does today |
+| `rag-service` | ✅ (`test_chunking.py`, `test_retrieval_triggers.py`, `test_api.py`) | ✅ | ✅ — stateless; the Chroma index lives in a named volume, not per-instance memory |
+| `eval-service` | ✅ (`test_judge.py`, `test_scenarios.py`, `test_agent_client.py`) | ✅ | ✅ — stateless; writes land in shared Postgres, not in-process |
+| `feature-store` | No `tests/` dir — its online store is Feast's own `feast serve`, built once from a fixed fake dataset baked in at image build time (see section 9 above); there's no app-level request-handling logic here to unit test the way the four FastAPI services have | ✅ | ✅ — read-only online store, safe to run two versions side by side |
+| `web-ui` | No `tests/` dir — static nginx + JS, no backend logic to unit test | ✅ | ✅ — static assets, trivially safe to flip |
+
+The two matrices are different widths (4 services vs. 6) on purpose: `ci.yml`'s unit-test matrix only includes services that have Python application logic with a `tests/` directory; `deploy.yml`'s build-and-push matrix includes every deployable service, tested or not, since `feature-store` and `web-ui` still ship a new image on every release even without unit tests to run first.
+
+The eval gate itself runs twice, also on purpose: once in `ci.yml` against a local `docker compose` stack (fast, free, on every PR), and again in `deploy.yml`'s `eval-gate-on-staging` job against the real staging deployment (slower, catches anything environment-specific — a different `.env`, different resource limits, a real network hop instead of a Docker bridge network — that a local stack wouldn't). Passing the PR-time gate doesn't skip the staging-time gate; the two check different things.
+
+**The one place this pipeline isn't uniform across all six services is `agent-service`.** Every other service in the deploy matrix is stateless enough that a short traffic-drain window during a blue-green flip is sufficient — the same case `sre/blue_green_demo.sh` demonstrates directly (zero dropped requests during a live cutover). `agent-service` keeps each session's conversation history in an in-process dictionary rather than an external store, so a flip that lands mid-conversation loses that session the same way a plain container restart already does today. Making that genuinely safe means either externalizing session state to Redis/Mongo, or adding call-draining to the rollout itself — mark the old version as not accepting new sessions, let it keep serving the ones already in progress until they end naturally, then retire it — the same pattern `sre/README.md` describes for a stateful real-time voice service, applied here to a stateful chat session instead.
 
 ## What mirrors what
 
