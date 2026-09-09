@@ -7,6 +7,7 @@ Ten services, seven of them built from scratch for this project, three of them r
 ### Contents
 
 - [Architecture](#architecture)
+- [CI/CD pipeline architecture, per service](docs/operations/cicd-pipeline-architecture.md) — a third diagram: how each service goes from `git push` to production, including the eval gate and blue-green cutover safety per service
 - [How it all works](#how-it-all-works)
 - [What mirrors what](#what-mirrors-what)
 - [Quick start](#quick-start)
